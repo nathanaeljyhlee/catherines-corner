@@ -1,7 +1,7 @@
 /* Catherine's Corner service worker — offline app shell.
    Bump VERSION on every deploy so clients pick up new code. */
 
-const VERSION = 'cc-v1.1.2';
+const VERSION = 'cc-v1.1.3';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'db.js', 'backup.js', 'manifest.json', 'icon-180.png', 'icon-512.png', 'check.html'];
 
 self.addEventListener('install', e => {
