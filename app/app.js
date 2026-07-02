@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.1.1';
+  const APP_VERSION = '1.1.2';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -517,6 +517,9 @@
         toast(err.message || 'That file couldn’t be restored.');
       }
     };
+
+    root.appendChild(el(
+      '<p class="hint" style="margin-top:14px">New phone, or lending it to family? <a href="check.html">Run the 30-second device check</a> to make sure recording and storage behave there.</p>'));
 
     const back = el('<button class="back">‹ grown-up home</button>');
     back.onclick = () => go('home');
