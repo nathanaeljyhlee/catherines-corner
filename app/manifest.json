@@ -1,0 +1,14 @@
+{
+  "name": "Catherine's Corner",
+  "short_name": "Corner",
+  "description": "The people your child loves, reading their favorite books aloud — kept for years.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#FAF4EA",
+  "theme_color": "#FAF4EA",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
