@@ -6,6 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
+  const APP_VERSION = '1.1.1';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -129,7 +130,7 @@
       shelf: kidShelf, voicePick: kidVoicePick, episodes: kidEpisodes, player: kidPlayer,
       pin: pinScreen,
       home: adultHome, setup: adultSetup, readers: adultReaders, books: adultBooks,
-      bookDetail: adultBookDetail, addBook: adultAddBook, requests: adultRequests,
+      bookDetail: adultBookDetail, addBook: adultAddBook, requests: adultRequests, safety: adultSafety,
       recWho: recWho, recWhat: recWhat, recShape: recShape, recPass1: recPass1, recPass2: recPass2, recDone: recDone,
     };
     const fn = screens[S.screen] || kidShelf;
@@ -137,7 +138,7 @@
     $app.appendChild(body);
     await fn(body, cornerName);
 
-    $app.appendChild(el('<footer class="appfoot">Everything stays on this device. Yours to keep, yours to download.</footer>'));
+    $app.appendChild(el('<footer class="appfoot">Everything stays on this device — back it up under “Keep it safe.” · v' + APP_VERSION + '</footer>'));
   }
 
   // =========================================================
@@ -423,7 +424,8 @@
     const card = el(
       '<div class="card"><div class="field"><label>The child’s name</label>' +
       '<input type="text" id="nm" placeholder="e.g. Mei" maxlength="30"></div>' +
-      '<button class="btn primary big" id="save">Make the corner</button></div>');
+      '<button class="btn primary big" id="save">Make the corner</button>' +
+      '<p class="hint" style="margin-top:12px">Moving from another device? Make the corner, then restore your backup under “Keep it safe.”</p></div>');
     root.appendChild(card);
     card.querySelector('#save').onclick = async () => {
       const v = card.querySelector('#nm').value.trim();
@@ -436,6 +438,11 @@
   async function adultHome(root, cornerName) {
     const [readers, books, requests, readings] = await Promise.all([DB.readers.all(), DB.books.all(), DB.requests.all(), DB.readings.all()]);
     const open = requests.filter(r => r.status === 'open');
+    const since = (await DB.settings.get('readingsSinceBackup')) || 0;
+    const lastBackup = await DB.settings.get('lastBackupAt');
+    const safetyDesc = since >= 1
+      ? since + ' reading' + (since === 1 ? '' : 's') + ' not backed up yet'
+      : lastBackup ? 'Backed up ' + new Date(lastBackup).toLocaleDateString() : 'Download everything as one file';
     root.appendChild(el(
       '<div class="kicker">' + esc(cornerName || 'the corner') + '</div>' +
       '<h1 class="screen-title">What would you like to do?</h1>'));
@@ -446,9 +453,11 @@
       ['books', '📚', 'The library', books.length + ' book' + (books.length === 1 ? '' : 's') + ' · ' + readings.length + ' reading' + (readings.length === 1 ? '' : 's')],
       ['readers', '👥', 'The people who read', readers.length ? readers.map(r => r.name).join(', ') : 'Add the people who read to ' + esc(cornerName || 'your child')],
       ['requests', '📬', 'Book requests', open.length ? open.length + ' open request' + (open.length === 1 ? '' : 's') : 'Ask someone to read a favorite'],
+      ['safety', '🗄️', 'Keep it safe', safetyDesc],
     ];
     for (const [id, ic, t, d] of cards) {
       const c = el('<button class="home-card"><span class="ic">' + ic + '</span><span class="t">' + t + '</span><span class="d">' + d + '</span></button>');
+      if (id === 'safety' && since >= 3) c.style.borderColor = 'var(--warm)';
       c.onclick = () => {
         if (id === 'record') startRecordFlow();
         else go(id);
@@ -456,6 +465,62 @@
       grid.appendChild(c);
     }
     root.appendChild(grid);
+  }
+
+  async function adultSafety(root, cornerName) {
+    const [readings, lastBackup] = await Promise.all([DB.readings.all(), DB.settings.get('lastBackupAt')]);
+    root.appendChild(el(
+      '<h1 class="screen-title">Keep it safe</h1>' +
+      '<p class="screen-sub">Everything lives on this device. A backup puts the whole corner — every voice, every page — into one plain zip file you can keep anywhere and open with anything, even without this app.</p>'));
+
+    const card = el(
+      '<div class="card"><div class="kicker">back up</div>' +
+      '<p class="hint" style="margin-top:8px">' + readings.length + ' reading' + (readings.length === 1 ? '' : 's') + ' on this device' +
+      (lastBackup ? ' · last backup ' + new Date(lastBackup).toLocaleDateString() : ' · never backed up') + '</p>' +
+      '<div class="btn-row"><button class="btn primary big" id="backup" ' + (readings.length ? '' : 'disabled') + '>⤓ Back up everything</button></div></div>');
+    root.appendChild(card);
+    card.querySelector('#backup').onclick = async () => {
+      const btn = card.querySelector('#backup');
+      btn.disabled = true; btn.textContent = 'Packing the corner…';
+      try {
+        const blob = await Backup.exportAll();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'catherines-corner-backup-' + new Date().toISOString().slice(0, 10) + '.zip';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+        await DB.settings.set('lastBackupAt', Date.now());
+        await DB.settings.set('readingsSinceBackup', 0);
+        toast('Backed up — keep that file somewhere safe.');
+        render();
+      } catch (err) {
+        toast('Backup didn’t finish: ' + err.message);
+        btn.disabled = false; btn.textContent = '⤓ Back up everything';
+      }
+    };
+
+    const rcard = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">restore</div>' +
+      '<p class="hint" style="margin-top:8px">Bring a backup file from this or another device. Restoring adds to what’s here — it never deletes anything.</p>' +
+      '<div class="btn-row"><span class="btn filebtn">⤒ Restore a backup<input type="file" id="restorefile" accept=".zip,application/zip"></span></div></div>');
+    root.appendChild(rcard);
+    rcard.querySelector('#restorefile').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      try {
+        const counts = await Backup.importFile(f);
+        for (const key of [...urlCache.keys()]) dropURL(key);
+        toast('Restored ' + counts.readings + ' reading' + (counts.readings === 1 ? '' : 's') + ', ' +
+          counts.books + ' book' + (counts.books === 1 ? '' : 's') + ', ' + counts.readers + ' reader' + (counts.readers === 1 ? '' : 's') + '.');
+        render();
+      } catch (err) {
+        toast(err.message || 'That file couldn’t be restored.');
+      }
+    };
+
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
   }
 
   async function adultReaders(root) {
@@ -1062,6 +1127,9 @@
         createdAt: Date.now(),
       };
       await DB.readings.save(reading);
+      const since = (await DB.settings.get('readingsSinceBackup')) || 0;
+      await DB.settings.set('readingsSinceBackup', since + 1);
+      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
       if (S.rec.requestId) {
         const q = (await DB.requests.all()).find(x => x.id === S.rec.requestId);
         if (q) { q.status = 'done'; await DB.requests.save(q); }

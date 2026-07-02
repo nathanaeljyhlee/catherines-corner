@@ -19,6 +19,8 @@
 <body>
 <div id="app" aria-live="polite"></div>
 <script src="db.js"></script>
+<script src="backup.js"></script>
 <script src="app.js"></script>
+<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});</script>
 </body>
 </html>
