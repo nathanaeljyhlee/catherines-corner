@@ -1,7 +1,7 @@
 /* Catherine's Corner service worker — offline app shell.
    Bump VERSION on every deploy so clients pick up new code. */
 
-const VERSION = 'cc-v1.2.1';
+const VERSION = 'cc-v1.3.0';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'db.js', 'backup.js', 'export.js', 'manifest.json', 'icon-180.png', 'icon-512.png', 'check.html'];
 
 self.addEventListener('install', e => {
@@ -11,14 +11,32 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== VERSION && k.startsWith('cc-')).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== VERSION && k !== 'cc-shared-inbox' && k.startsWith('cc-')).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
-// Cache-first for the shell, refreshed in the background; network passthrough otherwise.
+// Share target: audio shared from another app (e.g. a voice memo) lands here,
+// is parked in a cache inbox, and the app turns it into a reading.
 self.addEventListener('fetch', e => {
   const req = e.request;
+  if (req.method === 'POST' && new URL(req.url).pathname.endsWith('/share-inbox')) {
+    e.respondWith((async () => {
+      try {
+        const form = await req.formData();
+        let file = form.get('audio');
+        if (!(file instanceof File)) file = [...form.values()].find(v => v instanceof File);
+        if (file) {
+          const cache = await caches.open('cc-shared-inbox');
+          await cache.put('./__shared-audio', new Response(file, {
+            headers: { 'content-type': file.type || 'application/octet-stream', 'x-name': encodeURIComponent(file.name || 'shared recording') },
+          }));
+        }
+      } catch (err) { /* fall through to the app either way */ }
+      return Response.redirect('./?shared=1', 303);
+    })());
+    return;
+  }
   if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
   e.respondWith(
     caches.open(VERSION).then(cache =>
