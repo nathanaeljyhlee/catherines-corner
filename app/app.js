@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.3.1';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -166,7 +166,7 @@
       pin: pinScreen,
       home: adultHome, setup: adultSetup, readers: adultReaders, books: adultBooks,
       bookDetail: adultBookDetail, addBook: adultAddBook, requests: adultRequests, safety: adultSafety,
-      studio: coverStudio,
+      studio: coverStudio, memoHelp: memoHelp,
       recWho: recWho, recWhat: recWhat, recShape: recShape, recPass1: recPass1, recPass2: recPass2, recDone: recDone,
     };
     const fn = screens[S.screen] || kidShelf;
@@ -577,6 +577,65 @@
       grid.appendChild(c);
     }
     root.appendChild(grid);
+
+    const helpLine = el('<p class="hint" style="margin-top:14px">🎙 Someone already recorded a voice memo on their phone? <a href="#" id="memohelp">Here’s how to bring it in</a>.</p>');
+    helpLine.querySelector('#memohelp').onclick = e => { e.preventDefault(); go('memoHelp'); };
+    root.appendChild(helpLine);
+  }
+
+  // =========================================================
+  // VOICE-MEMO GUIDE — how a memo becomes a reading, per platform
+  // =========================================================
+  async function memoHelp(root) {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+    root.appendChild(el(
+      '<h1 class="screen-title">Bringing a voice memo in</h1>' +
+      '<p class="screen-sub">A recording made anywhere — Grandma’s Voice Memos, any recorder app — can become a reading here. The steps depend on the phone.</p>'));
+
+    const stepCard = (kicker, title, steps, note) => el(
+      '<div class="card" style="margin-bottom:14px"><div class="kicker">' + kicker + '</div>' +
+      '<h2 class="serif" style="font-size:19px; font-weight:600; margin-top:6px">' + title + '</h2>' +
+      '<div class="stack" style="margin-top:12px">' +
+      steps.map((s, i) =>
+        '<div class="rowitem"><span class="av" style="background:var(--accent); width:26px; height:26px; font-size:13px">' + (i + 1) + '</span>' +
+        '<div class="grow"><div class="d" style="font-size:13.5px; color:var(--ink)">' + s + '</div></div></div>').join('') +
+      '</div>' + (note ? '<p class="hint" style="margin-top:10px">' + note + '</p>' : '') + '</div>');
+
+    const installCard = stepCard('first, once per device', 'Put Catherine’s Corner on the home screen',
+      isIOS
+        ? ['In <b>Safari</b>, tap the share button <b>⎋</b> (the square with the arrow).',
+           'Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.']
+        : ['In <b>Chrome</b>, tap the <b>⋮</b> menu (top right).',
+           'Tap <b>Add to home screen</b> (or <b>Install app</b>), then confirm.'],
+      isIOS
+        ? 'This protects the recordings from Safari’s storage clean-ups.'
+        : 'This is the step that adds <b>Catherine’s Corner to the phone’s share menu</b> — without it, the share option below won’t appear.');
+    if (standalone) installCard.querySelector('.kicker').textContent = 'already done on this device ✓';
+
+    const iosCard = stepCard('on iPhone', 'Voice Memos → Files → here',
+      ['In <b>Voice Memos</b>, open the recording and tap <b>⋯</b> (or select it and tap the share button).',
+       'Tap <b>Share</b> → <b>Save to Files</b> and pick any folder. <i>(Voice Memos don’t appear in Files until you do this — that’s an Apple thing, not yours.)</i>',
+       'Back here: <b>for grown-ups → Record a reading</b>, pick who’s reading and the book.',
+       'On the “read &amp; record” step, tap <b>⤓ Import audio</b> → <b>Choose Files</b> → pick the memo.'],
+      'iPhones don’t let web apps into the share menu yet, so Files is the bridge.');
+
+    const androidCard = stepCard('on Android', 'Share straight to Catherine’s Corner',
+      ['In the recorder app, tap <b>Share</b> on the recording.',
+       'Pick <b>Catherine’s Corner</b> in the share menu <i>(appears after the home-screen step above)</i>.',
+       'The app opens; go to <b>for grown-ups</b> — a “recording arrived” card is waiting.',
+       'Tap it, pick who’s reading and the book, and it goes straight to lining up the pages.'],
+      null);
+
+    root.appendChild(installCard);
+    if (isIOS) { root.appendChild(iosCard); root.appendChild(androidCard); }
+    else { root.appendChild(androidCard); root.appendChild(iosCard); }
+
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
   }
 
   async function adultSafety(root, cornerName) {
@@ -1204,8 +1263,7 @@
       '<button class="btn primary big" id="stop" style="display:none">■ Done reading</button>' +
       '</div>' +
       '<p class="rec-note">…or bring a recording you already have — a voice memo works beautifully. ' +
-      '<b>iPhone:</b> in Voice Memos tap ⋯ on the memo → Share → <b>Save to Files</b>, then pick it here. ' +
-      '<b>Android:</b> share the memo straight to Catherine’s Corner (once it’s on your home screen) and it appears in grown-up mode by itself.</p>' +
+      '<a href="#" id="p1help">Step-by-step: getting a voice memo in</a></p>' +
       '<div class="btn-row" style="justify-content:center">' +
       '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp" accept="audio/*"></span>' +
       '</div></div>');
@@ -1263,6 +1321,7 @@
       else if (mediaRecorder.state === 'recording') { elapsedBefore += (Date.now() - t0) / 1000; t0 = 0; }
       mediaRecorder.stop();
     };
+    hero.querySelector('#p1help').onclick = e => { e.preventDefault(); go('memoHelp'); };
     hero.querySelector('#imp').onchange = async e => {
       const f = e.target.files[0];
       if (!f) return;
