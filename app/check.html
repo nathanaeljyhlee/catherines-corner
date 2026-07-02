@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catherine's Corner — device check</title>
+<meta name="theme-color" content="#FAF4EA">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .checks{display:flex; flex-direction:column; gap:9px; margin-top:16px}
+  .chk{display:flex; gap:12px; align-items:flex-start; background:#fff; border:1px solid var(--line); border-radius:13px; padding:12px 14px}
+  .chk .mark{font-size:17px; flex:none; width:24px; text-align:center}
+  .chk.ok .mark{color:var(--good)}
+  .chk.warn .mark{color:var(--warm)}
+  .chk.bad .mark{color:var(--bad)}
+  .chk .t{font-weight:600; font-size:14px}
+  .chk .d{font-size:12.5px; color:var(--muted); margin-top:2px}
+  .verdict{margin-top:18px; border-radius:16px; padding:16px 18px; font-size:14.5px; border:1px solid var(--line); background:#fff}
+  .verdict.ok{background:#E7F0E8; border-color:#bcd3bc}
+  .verdict.bad{background:#F6E7E1; border-color:#e3cfc4}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="topbar"><span class="mark"><b>Catherine’s</b> Corner</span>
+    <span class="mode-pill">device check</span></div>
+  <h1 class="screen-title">Will this phone treat the recordings kindly?</h1>
+  <p class="screen-sub">A 30-second check of everything Catherine’s Corner needs on this exact device and browser. Nothing here is saved or sent anywhere.</p>
+  <div class="checks" id="checks"></div>
+  <div class="card" style="margin-top:16px">
+    <div class="kicker">the one that needs your voice</div>
+    <p class="hint" style="margin-top:8px">Tap, allow the microphone, and say a few words — it records for two seconds, then plays your voice back. If you can hear yourself, recording works end to end on this device.</p>
+    <div class="btn-row">
+      <button class="btn warm big" id="mic">🎙️ Test the microphone</button>
+      <button class="btn big" id="play" style="display:none">▶ Play it back</button>
+    </div>
+    <p class="hint" id="micout" style="margin-top:10px"></p>
+  </div>
+  <div class="verdict" id="verdict" style="display:none"></div>
+  <div class="btn-row" style="margin-top:18px"><a class="btn primary" href="./">‹ Back to Catherine’s Corner</a></div>
+  <footer class="appfoot">Catherine’s Corner device check</footer>
+</div>
+<script>
+(function () {
+  'use strict';
+  const $checks = document.getElementById('checks');
+  const results = [];
+
+  function row(status, title, detail) {
+    results.push(status);
+    const div = document.createElement('div');
+    div.className = 'chk ' + status;
+    div.innerHTML = '<span class="mark">' + (status === 'ok' ? '✓' : status === 'warn' ? '⚠︎' : '✗') + '</span>' +
+      '<span><span class="t"></span><br><span class="d"></span></span>';
+    div.querySelector('.t').textContent = title;
+    div.querySelector('.d').textContent = detail;
+    $checks.appendChild(div);
+  }
+
+  async function run() {
+    // 1. secure context
+    row(window.isSecureContext ? 'ok' : 'bad', 'Secure connection',
+      window.isSecureContext ? 'HTTPS — the microphone is allowed to work.' : 'Not a secure context — the microphone will be blocked.');
+
+    // 2. IndexedDB blob round-trip
+    try {
+      await new Promise((res, rej) => {
+        const open = indexedDB.open('cc-device-check', 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('t', { keyPath: 'id' });
+        open.onerror = () => rej(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const blob = new Blob([new Uint8Array(64).fill(7)], { type: 'audio/mp4' });
+          const tx = db.transaction('t', 'readwrite');
+          tx.objectStore('t').put({ id: 1, blob });
+          tx.oncomplete = () => {
+            const rd = db.transaction('t', 'readonly').objectStore('t').get(1);
+            rd.onsuccess = () => {
+              db.close();
+              indexedDB.deleteDatabase('cc-device-check');
+              rd.result && rd.result.blob && rd.result.blob.size === 64 ? res() : rej(new Error('blob came back wrong'));
+            };
+            rd.onerror = () => rej(rd.error);
+          };
+          tx.onerror = () => rej(tx.error);
+        };
+      });
+      row('ok', 'On-device storage', 'Recordings can be stored and read back on this device.');
+    } catch (e) {
+      row('bad', 'On-device storage', 'IndexedDB failed: ' + (e && e.message || e) + ' (private browsing can cause this — try a normal tab).');
+    }
+
+    // 3. recorder support
+    if (typeof MediaRecorder === 'undefined') {
+      row('bad', 'Audio recorder', 'MediaRecorder is missing — recording won’t work in this browser.');
+    } else {
+      const mp4 = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/mp4');
+      const webm = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm');
+      row('ok', 'Audio recorder', 'MediaRecorder is available' +
+        (mp4 || webm ? ' (' + [mp4 && 'audio/mp4', webm && 'audio/webm'].filter(Boolean).join(', ') + ').' : ' (browser default format).'));
+    }
+
+    // 4. service worker / offline
+    if (!('serviceWorker' in navigator)) {
+      row('warn', 'Works offline', 'No service worker support — the app needs a connection each time.');
+    } else {
+      const reg = await navigator.serviceWorker.getRegistration('./').catch(() => null);
+      row(reg ? 'ok' : 'warn', 'Works offline',
+        reg ? 'The app shell is cached — it opens without a connection.' :
+          'Supported, but not set up yet — open the app once, then re-run this check.');
+    }
+
+    // 5. persistent storage
+    if (navigator.storage && navigator.storage.persisted) {
+      const p = await navigator.storage.persisted().catch(() => false);
+      let quota = '';
+      if (navigator.storage.estimate) {
+        const est = await navigator.storage.estimate().catch(() => null);
+        if (est && est.quota) quota = ' Room for roughly ' + Math.round(est.quota / 1e9) + ' GB.';
+      }
+      row(p ? 'ok' : 'warn', 'Storage protection',
+        (p ? 'The browser has promised not to evict the recordings.' :
+          'Not yet granted — it’s requested when you save your first reading. Installing to the home screen helps.') + quota);
+    } else {
+      row('warn', 'Storage protection', 'This browser can’t make that promise — keep backups (Keep it safe).');
+    }
+
+    // 6. installed to home screen?
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    row(standalone ? 'ok' : 'warn', 'Installed to home screen',
+      standalone ? 'Running as an installed app — best protection for the recordings.' :
+        'Running in the browser. Share → Add to Home Screen gives it an icon and stronger storage.');
+
+    // 7. web audio (playback engine)
+    row((window.AudioContext || window.webkitAudioContext) ? 'ok' : 'warn', 'Sound playback', 'Audio playback engine is available.');
+
+    verdict();
+  }
+
+  function verdict() {
+    const bad = results.filter(r => r === 'bad').length;
+    const v = document.getElementById('verdict');
+    v.style.display = '';
+    v.className = 'verdict ' + (bad ? 'bad' : 'ok');
+    v.textContent = bad
+      ? 'Something important is missing on this device — see the ✗ rows above before trusting it with real recordings.'
+      : 'This device looks ready. Do the microphone test above, and if you hear your own voice, you’re good to record for real.';
+  }
+
+  // microphone round-trip (needs a tap)
+  let clipUrl = null;
+  document.getElementById('mic').onclick = async () => {
+    const out = document.getElementById('micout');
+    const playBtn = document.getElementById('play');
+    out.textContent = 'Listening for 2 seconds — say something…';
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      rec.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunks, { type: rec.mimeType || 'audio/mp4' });
+        if (clipUrl) URL.revokeObjectURL(clipUrl);
+        clipUrl = URL.createObjectURL(blob);
+        out.textContent = '✓ Recorded ' + (blob.size / 1024).toFixed(1) + ' KB as ' + (rec.mimeType || 'the browser default') + '. Now play it back.';
+        playBtn.style.display = '';
+      };
+      rec.start();
+      setTimeout(() => rec.state !== 'inactive' && rec.stop(), 2000);
+    } catch (e) {
+      out.textContent = '✗ The microphone said no: ' + (e && e.name || e) + '. Check Settings → Safari → Microphone, then try again.';
+    }
+  };
+  document.getElementById('play').onclick = () => {
+    const a = new Audio(clipUrl);
+    a.play().catch(e => { document.getElementById('micout').textContent = '✗ Playback failed: ' + (e && e.message || e); });
+  };
+
+  run();
+})();
+</script>
+</body>
+</html>
