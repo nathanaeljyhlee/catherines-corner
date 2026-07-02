@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.3.1';
+  const APP_VERSION = '1.3.2';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -69,8 +69,9 @@
       const cache = await caches.open('cc-shared-inbox');
       const res = await cache.match('./__shared-audio');
       if (!res) return;
-      const blob = await res.blob();
+      const raw = await res.blob();
       const name = decodeURIComponent(res.headers.get('x-name') || 'shared recording');
+      const blob = Backup.normalizeAudioFile(new File([raw], name, { type: raw.type }));
       S.shared = { blob, name };
       toast('A recording arrived 🎙 — open “for grown-ups” to turn it into a reading.');
     } catch (e) { /* inbox is best-effort */ }
@@ -845,7 +846,8 @@
       row.querySelector('[data-dl]').onclick = () => {
         const a = document.createElement('a');
         a.href = blobURL('aud-' + r.id, r.audioBlob);
-        a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.webm').replace(/[/\\?%*:|"<>]/g, '-');
+        const ext = Backup.audioExt(r.audioBlob && r.audioBlob.type);
+        a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + ext).replace(/[/\\?%*:|"<>]/g, '-');
         a.click();
       };
       row.querySelector('[data-vx]').onclick = async e => {
@@ -1265,7 +1267,7 @@
       '<p class="rec-note">…or bring a recording you already have — a voice memo works beautifully. ' +
       '<a href="#" id="p1help">Step-by-step: getting a voice memo in</a></p>' +
       '<div class="btn-row" style="justify-content:center">' +
-      '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp" accept="audio/*"></span>' +
+      '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp" accept="audio/*,.m4a,.aac,.mp3,.wav,.caf"></span>' +
       '</div></div>');
     root.appendChild(hero);
 
@@ -1325,12 +1327,19 @@
     hero.querySelector('#imp').onchange = async e => {
       const f = e.target.files[0];
       if (!f) return;
-      S.rec.audioBlob = await readAsBlob(f);
+      // iOS hands over .m4a with a missing/odd mime type — normalize so
+      // playback, backups, and download names all treat it as audio/mp4.
+      const blob = Backup.normalizeAudioFile(f);
+      S.rec.audioBlob = blob;
       S.rec.imported = true;
-      // measure duration
-      const a = new Audio(URL.createObjectURL(f));
-      a.onloadedmetadata = () => { S.rec.duration = isFinite(a.duration) ? a.duration : 0; URL.revokeObjectURL(a.src); go('recPass2'); };
-      a.onerror = () => { S.rec.duration = 0; go('recPass2'); };
+      const url = URL.createObjectURL(blob);
+      const a = new Audio(url);
+      a.onloadedmetadata = () => { S.rec.duration = isFinite(a.duration) ? a.duration : 0; URL.revokeObjectURL(url); go('recPass2'); };
+      a.onerror = () => {
+        S.rec.duration = 0; URL.revokeObjectURL(url);
+        toast('Couldn’t read that recording’s length here — it’s kept as-is and will play where the format is supported.');
+        go('recPass2');
+      };
     };
 
     const back = el('<button class="back">‹ back</button>');

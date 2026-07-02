@@ -101,11 +101,28 @@
 
   // ---------- backup / restore ----------
   const EXT = {
-    'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/aac': 'aac',
-    'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg',
+    'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/m4a': 'm4a', 'audio/aac': 'aac',
+    'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav',
+    'audio/ogg': 'ogg', 'audio/opus': 'ogg', 'audio/flac': 'flac', 'audio/aiff': 'aiff', 'audio/x-caf': 'caf',
     'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic',
   };
   const extOf = mime => EXT[(mime || '').split(';')[0].trim()] || 'bin';
+  // audio files keep a sensible extension even when the browser gave no mime — Apple's default is m4a
+  const audioExt = mime => EXT[(mime || '').split(';')[0].trim()] || 'm4a';
+
+  // iOS often hands over .m4a files with an empty or odd mime type; fix the
+  // type from the filename so playback, export names, and backups all behave.
+  const MIME_BY_EXT = {
+    m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', mp3: 'audio/mpeg', wav: 'audio/wav',
+    ogg: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm', flac: 'audio/flac', aiff: 'audio/aiff', caf: 'audio/x-caf',
+  };
+  function normalizeAudioFile(file) {
+    const given = (file.type || '').split(';')[0].trim();
+    if (given && given !== 'application/octet-stream' && given.startsWith('audio/')) return file;
+    const ext = ((file.name || '').split('.').pop() || '').toLowerCase();
+    const type = MIME_BY_EXT[ext] || given || 'audio/mp4';
+    return new Blob([file], { type });
+  }
 
   async function exportAll() {
     const [readers, books, readings, requests, cornerName] = await Promise.all([
@@ -132,7 +149,7 @@
       const { audioBlob, ...meta } = r;
       let audio = null;
       if (audioBlob) {
-        const f = 'audio/' + r.id + '.' + extOf(audioBlob.type);
+        const f = 'audio/' + r.id + '.' + audioExt(audioBlob.type);
         files.push({ name: f, bytes: new Uint8Array(await audioBlob.arrayBuffer()) });
         audio = { file: f, mime: audioBlob.type };
       }
@@ -174,5 +191,5 @@
     return counts;
   }
 
-  window.Backup = { exportAll, importFile };
+  window.Backup = { exportAll, importFile, audioExt, normalizeAudioFile };
 })();
