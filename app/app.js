@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.1.2';
+  const APP_VERSION = '1.1.3';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -114,19 +114,24 @@
   async function render() {
     player.stop();
     const cornerName = await DB.settings.get('cornerName');
+    if (S.screen !== 'alphaNotice' && !(await DB.settings.get('alphaAck'))) {
+      S.mode = 'kid';
+      S.screen = 'alphaNotice';
+    }
     $app.innerHTML = '';
 
     const bar = el(
       '<div class="topbar">' +
       '<span class="mark"><b>Catherine’s</b> Corner</span>' +
       (S.mode === 'adult'
-        ? '<span class="mode-pill">grown-up mode &middot; <button id="to-kid">back to kid mode</button></span>'
-        : '') +
+        ? '<span class="mode-pill">alpha &middot; grown-up mode &middot; <button id="to-kid">back to kid mode</button></span>'
+        : '<span class="mode-pill">alpha · early test build</span>') +
       '</div>');
     $app.appendChild(bar);
     if (S.mode === 'adult') bar.querySelector('#to-kid').onclick = () => { S.mode = 'kid'; go('shelf'); };
 
     const screens = {
+      alphaNotice: alphaNotice,
       shelf: kidShelf, voicePick: kidVoicePick, episodes: kidEpisodes, player: kidPlayer,
       pin: pinScreen,
       home: adultHome, setup: adultSetup, readers: adultReaders, books: adultBooks,
@@ -139,6 +144,35 @@
     await fn(body, cornerName);
 
     $app.appendChild(el('<footer class="appfoot">Everything stays on this device — back it up under “Keep it safe.” · v' + APP_VERSION + '</footer>'));
+  }
+
+  // =========================================================
+  // ALPHA NOTICE — shown once, before anything else
+  // =========================================================
+  async function alphaNotice(root) {
+    const card = el(
+      '<div class="card" style="max-width:560px; margin:26px auto 0">' +
+      '<div class="kicker">an early test build</div>' +
+      '<h1 class="screen-title" style="font-size:24px">Before you tuck anything precious in here…</h1>' +
+      '<p class="screen-sub" style="margin-bottom:14px">Catherine’s Corner is in <b>alpha</b> — you’re testing it early, and the honest state of things is:</p>' +
+      '<div class="stack">' +
+      '<div class="rowitem"><span style="font-size:19px">📍</span><div class="grow"><div class="t">Recordings live only on this device</div>' +
+      '<div class="d">In this browser, on this phone or tablet. Nothing is uploaded anywhere.</div></div></div>' +
+      '<div class="rowitem"><span style="font-size:19px">⚠️</span><div class="grow"><div class="t">They can be lost</div>' +
+      '<div class="d">Clearing this browser’s data, deleting the app, or losing the device deletes the recordings with it.</div></div></div>' +
+      '<div class="rowitem"><span style="font-size:19px">🗄️</span><div class="grow"><div class="t">Back up anything you’d hate to lose</div>' +
+      '<div class="d">for grown-ups → Keep it safe → Back up everything. That one zip file is yours to keep anywhere, forever.</div></div></div>' +
+      '<div class="rowitem"><span style="font-size:19px">🔧</span><div class="grow"><div class="t">Things will change</div>' +
+      '<div class="d">This build exists to be tested. Features may move or break between versions — your feedback shapes it.</div></div></div>' +
+      '</div>' +
+      '<div class="btn-row" style="margin-top:18px"><button class="btn primary big" id="ack">I understand — take me in</button></div>' +
+      '</div>');
+    root.appendChild(card);
+    card.querySelector('#ack').onclick = async () => {
+      await DB.settings.set('alphaAck', Date.now());
+      S.mode = 'kid';
+      go('shelf');
+    };
   }
 
   // =========================================================
@@ -1160,7 +1194,9 @@
       '<button class="btn primary big" id="kid">See the shelf (kid mode)</button>' +
       (book ? '<button class="btn" id="another">Record the next chapter</button>' : '') +
       '<button class="btn ghost" id="home">grown-up home</button>' +
-      '</div></div>'));
+      '</div>' +
+      '<p class="hint" style="margin-top:16px">Alpha reminder: this reading lives only on this device until you back it up (Keep it safe).</p>' +
+      '</div>'));
     root.querySelector('#kid').onclick = () => { S.mode = 'kid'; go('shelf'); };
     if (book) root.querySelector('#another').onclick = () => startRecordFlow({ bookId: book.id, readerId: reading.readerId });
     root.querySelector('#home').onclick = () => go('home');
