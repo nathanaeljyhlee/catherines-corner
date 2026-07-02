@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.2.1';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -398,14 +398,43 @@
       '<div class="pinwrap card">' +
       '<div class="kicker">for grown-ups</div>' +
       '<h1 class="screen-title" id="pt" style="font-size:22px">' + (creating ? 'Choose a grown-up code' : 'Grown-up code') + '</h1>' +
-      '<p class="hint" id="ph">' + (creating ? 'Four digits. This keeps recording and settings away from little hands.' : 'Enter the four-digit code.') + '</p>' +
+      '<p class="hint" id="ph">' + (creating
+        ? 'Four digits. It keeps little fingers out of the settings — nothing more. It works on <b>this device only</b>: family using their own phone or tablet choose their own code there.'
+        : 'Enter the four-digit code for this device.') + '</p>' +
       '<div class="pin-dots" id="dots">' + '<i></i>'.repeat(4) + '</div>' +
       '<div class="pinpad" id="pad"></div>' +
       '<div class="pin-err" id="err"></div>' +
-      '<button class="back" id="back">‹ back to the shelf</button>' +
+      (creating ? '' : '<button class="gate-link" id="forgot" style="margin-top:12px">I forgot the code</button>') +
+      '<button class="back" id="back" style="display:block; margin:14px auto 0">‹ back to the shelf</button>' +
       '</div>');
     root.appendChild(wrap);
     wrap.querySelector('#back').onclick = () => { S.mode = 'kid'; go('shelf'); };
+
+    // Forgot-the-code escape: the code is a kid-gate, not a lock. A quick
+    // grown-up check clears it so a new one can be chosen — recordings untouched.
+    const forgotBtn = wrap.querySelector('#forgot');
+    if (forgotBtn) forgotBtn.onclick = () => {
+      const a = 3 + Math.floor(Math.random() * 7), b = 3 + Math.floor(Math.random() * 7);
+      wrap.innerHTML = '';
+      wrap.appendChild(el(
+        '<div><div class="kicker">a quick grown-up check</div>' +
+        '<h1 class="screen-title" style="font-size:22px">What is ' + a + ' × ' + b + '?</h1>' +
+        '<p class="hint">The code only keeps little fingers out — a grown-up can always reset it. Everything on the shelf stays exactly as it is.</p>' +
+        '<div class="field" style="margin-top:14px"><input type="number" id="ans" inputmode="numeric" placeholder="your answer"></div>' +
+        '<div class="pin-err" id="ferr"></div>' +
+        '<div class="btn-row"><button class="btn primary" id="chk">That’s my answer</button>' +
+        '<button class="btn ghost" id="fback">never mind</button></div></div>'));
+      wrap.querySelector('#chk').onclick = async () => {
+        if (parseInt(wrap.querySelector('#ans').value, 10) === a * b) {
+          await DB.settings.set('pin', null);
+          toast('Code cleared — choose a new one.');
+          go('pin');
+        } else {
+          wrap.querySelector('#ferr').textContent = 'Not quite — try again.';
+        }
+      };
+      wrap.querySelector('#fback').onclick = () => go('pin');
+    };
 
     const pad = wrap.querySelector('#pad');
     for (const k of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫']) {
