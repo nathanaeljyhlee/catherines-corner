@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.1.3';
+  const APP_VERSION = '1.2.0';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -136,6 +136,7 @@
       pin: pinScreen,
       home: adultHome, setup: adultSetup, readers: adultReaders, books: adultBooks,
       bookDetail: adultBookDetail, addBook: adultAddBook, requests: adultRequests, safety: adultSafety,
+      studio: coverStudio,
       recWho: recWho, recWhat: recWhat, recShape: recShape, recPass1: recPass1, recPass2: recPass2, recDone: recDone,
     };
     const fn = screens[S.screen] || kidShelf;
@@ -649,7 +650,7 @@
       '<div class="card">' +
       '<div class="field"><label>Cover photo</label>' +
       '<span class="btn filebtn" id="cvbtn">📷 Photograph the cover<input type="file" id="cv" accept="image/*" capture="environment"></span>' +
-      '<span class="hint" id="cvname">You can also add it later.</span></div>' +
+      '<span class="hint" id="cvname">You can also add it later — or let your child design one (🖍️ on the book’s page).</span></div>' +
       '<div class="field"><label>Title</label><input type="text" id="ti" placeholder="e.g. Goodnight, Little Bear"></div>' +
       '<div class="btn-row"><button class="btn primary" id="save">Add to the library</button></div></div>');
     root.appendChild(card);
@@ -689,12 +690,33 @@
         '<div class="d">' + esc(rd ? rd.name : '') + ' · ' + fmt(r.duration || 0) +
         ((r.skipRanges || []).length ? ' · ' + r.skipRanges.length + ' gentle skip' + (r.skipRanges.length > 1 ? 's' : '') : '') + '</div></div>' +
         '<button class="btn" data-dl>⤓ keep a copy</button>' +
+        '<button class="btn" data-vx>🎞 video</button>' +
         '<button class="btn danger" data-x>delete</button></div>');
       row.querySelector('[data-dl]').onclick = () => {
         const a = document.createElement('a');
         a.href = blobURL('aud-' + r.id, r.audioBlob);
         a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.webm').replace(/[/\\?%*:|"<>]/g, '-');
         a.click();
+      };
+      row.querySelector('[data-vx]').onclick = async e => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const out = await VideoExport.exportReading({
+            reading: r, book, reader: rd,
+            onProgress: p => { btn.textContent = '🎞 ' + Math.round(p * 100) + '%'; },
+          });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(out.blob);
+          a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + out.ext).replace(/[/\\?%*:|"<>]/g, '-');
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+          toast('Video ready — pages and voice in one file to share.');
+        } catch (err) {
+          toast('Video export didn’t finish: ' + (err && err.message || err));
+        }
+        btn.disabled = false;
+        btn.textContent = '🎞 video';
       };
       row.querySelector('[data-x]').onclick = async () => {
         if (!confirm('Delete this reading? The voice recording cannot be brought back.')) return;
@@ -709,10 +731,12 @@
       '<div class="btn-row">' +
       '<button class="btn primary" id="rec">🎙️ Record this book</button>' +
       '<button class="btn" id="ask">📬 Ask someone to read it</button>' +
+      '<button class="btn" id="art">🖍️ Design a colorful cover</button>' +
       '</div>');
     root.appendChild(row);
     row.querySelector('#rec').onclick = () => startRecordFlow({ bookId: book.id });
     row.querySelector('#ask').onclick = () => go('requests', { prefillBookId: book.id });
+    row.querySelector('#art').onclick = () => go('studio', { bookId: book.id });
     const back = el('<button class="back">‹ the library</button>');
     back.onclick = () => go('books');
     root.appendChild(back);
@@ -778,6 +802,151 @@
     };
     const back = el('<button class="back">‹ grown-up home</button>');
     back.onclick = () => go('home');
+    root.appendChild(back);
+  }
+
+  // =========================================================
+  // COVER STUDIO — a child designs the book's colorful cover
+  // =========================================================
+  async function coverStudio(root) {
+    const book = await DB.books.get(S.params.bookId);
+    if (!book) return go('books');
+    const COLORS = ['#E5484D', '#F76B15', '#FFC53D', '#46A758', '#0090FF', '#8E4EC6', '#E93D82', '#2C2722'];
+    const BGS = ['#FFFFFF', '#FFF7E6', '#E6F3FF', '#FFE9F2', '#EAF7EA'];
+    const STAMPS = ['🌙', '⭐', '🐻', '🦊', '🌈', '🚀'];
+    const SIZES = [6, 14, 26];
+
+    root.appendChild(el(
+      '<h1 class="screen-title">Design the cover 🖍️</h1>' +
+      '<p class="screen-sub">Hand it to the artist. Fingers welcome — draw, stamp, and it becomes the cover of “' + esc(book.title) + '”.</p>'));
+
+    const wrap = el(
+      '<div class="studio-wrap">' +
+      '<canvas class="studio-canvas" id="cv" width="600" height="800"></canvas>' +
+      '<div class="studio-tools">' +
+      '<div class="tool-row" id="colors"></div>' +
+      '<div class="tool-row"><span class="hint">brush</span><span id="sizes"></span><span class="hint" style="margin-left:10px">stamps</span><span id="stamps"></span></div>' +
+      '<div class="tool-row"><span class="hint">paper</span><span id="bgs"></span>' +
+      '<button class="btn" id="undo" style="margin-left:10px">↩ undo</button>' +
+      '<button class="btn danger" id="clear">start over</button></div>' +
+      '<div class="btn-row" style="justify-content:center">' +
+      '<button class="btn primary big" id="save">Make it the cover</button>' +
+      '</div></div></div>');
+    root.appendChild(wrap);
+
+    const cv = wrap.querySelector('#cv');
+    const ctx = cv.getContext('2d');
+    let color = COLORS[4], size = SIZES[1], stamp = null, bg = BGS[0];
+    let drawing = false, undoStack = [];
+
+    function paintBg(c) {
+      ctx.fillStyle = c;
+      ctx.fillRect(0, 0, cv.width, cv.height);
+    }
+    paintBg(bg);
+
+    function snapshot() {
+      undoStack.push(ctx.getImageData(0, 0, cv.width, cv.height));
+      if (undoStack.length > 25) undoStack.shift();
+    }
+    function pos(e) {
+      const r = cv.getBoundingClientRect();
+      return { x: (e.clientX - r.left) * cv.width / r.width, y: (e.clientY - r.top) * cv.height / r.height };
+    }
+    cv.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      snapshot();
+      const p = pos(e);
+      if (stamp) {
+        ctx.font = '90px serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(stamp, p.x, p.y);
+        return;
+      }
+      drawing = true;
+      cv.setPointerCapture(e.pointerId);
+      ctx.lineCap = ctx.lineJoin = 'round';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = size;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + 0.1, p.y + 0.1);
+      ctx.stroke();
+    });
+    cv.addEventListener('pointermove', e => {
+      if (!drawing) return;
+      const p = pos(e);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    });
+    const stop = () => { drawing = false; };
+    cv.addEventListener('pointerup', stop);
+    cv.addEventListener('pointercancel', stop);
+
+    const $colors = wrap.querySelector('#colors');
+    COLORS.forEach(c => {
+      const b = el('<button class="swatch' + (c === color ? ' sel' : '') + '" style="background:' + c + '" aria-label="color"></button>');
+      b.onclick = () => {
+        color = c; stamp = null;
+        wrap.querySelectorAll('.swatch').forEach(s => s.classList.toggle('sel', s === b));
+        wrap.querySelectorAll('.stamp').forEach(s => s.classList.remove('sel'));
+      };
+      $colors.appendChild(b);
+    });
+    const $sizes = wrap.querySelector('#sizes');
+    SIZES.forEach(s => {
+      const b = el('<button class="brushsize' + (s === size ? ' sel' : '') + '"><i style="width:' + (s * 0.8) + 'px;height:' + (s * 0.8) + 'px"></i></button>');
+      b.onclick = () => {
+        size = s; stamp = null;
+        wrap.querySelectorAll('.brushsize').forEach(x => x.classList.toggle('sel', x === b));
+        wrap.querySelectorAll('.stamp').forEach(x => x.classList.remove('sel'));
+      };
+      $sizes.appendChild(b);
+    });
+    const $stamps = wrap.querySelector('#stamps');
+    STAMPS.forEach(st => {
+      const b = el('<button class="stamp">' + st + '</button>');
+      b.onclick = () => {
+        stamp = st;
+        wrap.querySelectorAll('.stamp').forEach(x => x.classList.toggle('sel', x === b));
+        wrap.querySelectorAll('.brushsize').forEach(x => x.classList.remove('sel'));
+      };
+      $stamps.appendChild(b);
+    });
+    const $bgs = wrap.querySelector('#bgs');
+    BGS.forEach(c => {
+      const b = el('<button class="bgdot" style="background:' + c + '" aria-label="paper color"></button>');
+      b.onclick = () => {
+        snapshot();
+        // repaint background behind the drawing: composite old art over new bg
+        const art = ctx.getImageData(0, 0, cv.width, cv.height);
+        const tmp = document.createElement('canvas');
+        tmp.width = cv.width; tmp.height = cv.height;
+        tmp.getContext('2d').putImageData(art, 0, 0);
+        bg = c;
+        paintBg(bg);
+        ctx.drawImage(tmp, 0, 0);
+      };
+      $bgs.appendChild(b);
+    });
+    wrap.querySelector('#undo').onclick = () => {
+      const prev = undoStack.pop();
+      if (prev) ctx.putImageData(prev, 0, 0);
+    };
+    wrap.querySelector('#clear').onclick = () => { snapshot(); paintBg(bg); };
+    wrap.querySelector('#save').onclick = () => {
+      cv.toBlob(async blob => {
+        book.cover = blob;
+        await DB.books.save(book);
+        dropURL('cover-' + book.id);
+        toast('The artist’s cover is on the shelf. 🖍️');
+        go('bookDetail', { bookId: book.id });
+      }, 'image/png');
+    };
+
+    const back = el('<button class="back">‹ back to the book</button>');
+    back.onclick = () => go('bookDetail', { bookId: book.id });
     root.appendChild(back);
   }
 
