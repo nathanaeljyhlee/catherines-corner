@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.2.1';
+  const APP_VERSION = '1.3.0';
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -58,7 +58,37 @@
     screen: 'shelf',
     params: {},
     rec: null,              // in-progress recording draft
+    shared: null,           // audio that arrived via the share target (e.g. a voice memo)
   };
+
+  // A recording shared from another app (voice memo, etc.) waits in a cache
+  // inbox written by the service worker's share-target handler.
+  async function checkSharedInbox() {
+    if (!('caches' in window)) return;
+    try {
+      const cache = await caches.open('cc-shared-inbox');
+      const res = await cache.match('./__shared-audio');
+      if (!res) return;
+      const blob = await res.blob();
+      const name = decodeURIComponent(res.headers.get('x-name') || 'shared recording');
+      S.shared = { blob, name };
+      toast('A recording arrived 🎙 — open “for grown-ups” to turn it into a reading.');
+    } catch (e) { /* inbox is best-effort */ }
+  }
+  async function consumeShared() {
+    const shared = S.shared;
+    if (!shared) return null;
+    S.shared = null;
+    try { const c = await caches.open('cc-shared-inbox'); await c.delete('./__shared-audio'); } catch (e) {}
+    const url = URL.createObjectURL(shared.blob);
+    const duration = await new Promise(res => {
+      const a = new Audio(url);
+      a.onloadedmetadata = () => res(isFinite(a.duration) ? a.duration : 0);
+      a.onerror = () => res(0);
+    });
+    URL.revokeObjectURL(url);
+    return { blob: shared.blob, name: shared.name, duration };
+  }
 
   function go(screen, params) {
     S.screen = screen;
@@ -208,12 +238,17 @@
         (hasNew ? '<span class="badge-new">new chapter</span>' : '') +
         (coverSrc ? '<img class="cover" alt="" src="' + coverSrc + '">'
           : '<span class="cover ph">' + esc(b.title) + '</span>') +
+        '<span class="tile-crayon" role="button" aria-label="decorate this book" title="decorate">🖍️</span>' +
         '<span class="meta"><span class="t">' + esc(b.title) + '</span>' +
         '<span class="by"><span class="av-row">' +
         voiceIds.slice(0, 4).map(id => avatar(readerMap.get(id), 'sm')).join('') +
         '</span>' + (voiceIds.length === 1 ? esc((readerMap.get(voiceIds[0]) || {}).name || '') : voiceIds.length + ' voices') + '</span></span>' +
         '</button>');
       tile.onclick = () => openBookKid(b, rs, voiceIds);
+      tile.querySelector('.tile-crayon').onclick = e => {
+        e.stopPropagation();
+        go('studio', { bookId: b.id });
+      };
       grid.appendChild(tile);
     }
     for (const st of told) {
@@ -511,6 +546,19 @@
       '<div class="kicker">' + esc(cornerName || 'the corner') + '</div>' +
       '<h1 class="screen-title">What would you like to do?</h1>'));
 
+    if (S.shared) {
+      const sh = el(
+        '<button class="home-card" style="border-color:var(--warm); background:var(--highlight)">' +
+        '<span class="ic">🎙</span><span class="t">A recording arrived</span>' +
+        '<span class="d">“' + esc(S.shared.name) + '” was shared from another app — turn it into a reading now. (It isn’t saved until you do.)</span></button>');
+      sh.onclick = async () => {
+        const got = await consumeShared();
+        if (!got || !got.duration) return toast('That file couldn’t be read as audio.');
+        startRecordFlow({ audioBlob: got.blob, duration: got.duration, imported: true });
+      };
+      root.appendChild(sh);
+    }
+
     const grid = el('<div class="home-grid"></div>');
     const cards = [
       ['record', '🎙️', 'Record a reading', 'Just read — pages come after. Or import a recording you already have.'],
@@ -681,19 +729,33 @@
       '<span class="btn filebtn" id="cvbtn">📷 Photograph the cover<input type="file" id="cv" accept="image/*" capture="environment"></span>' +
       '<span class="hint" id="cvname">You can also add it later — or let your child design one (🖍️ on the book’s page).</span></div>' +
       '<div class="field"><label>Title</label><input type="text" id="ti" placeholder="e.g. Goodnight, Little Bear"></div>' +
-      '<div class="btn-row"><button class="btn primary" id="save">Add to the library</button></div></div>');
+      '<div class="btn-row"><button class="btn primary" id="save">Add to the library</button>' +
+      '<button class="btn" id="design">🖍️ Design the cover instead</button></div></div>');
     root.appendChild(card);
     card.querySelector('#cv').onchange = e => {
       coverFile = e.target.files[0] || null;
-      card.querySelector('#cvname').textContent = coverFile ? coverFile.name : 'You can also add it later.';
+      card.querySelector('#cvname').textContent = coverFile ? coverFile.name : 'You can also add it later — or let your child design one (🖍️ on the book’s page).';
     };
-    card.querySelector('#save').onclick = async () => {
+    async function createBook() {
       const title = card.querySelector('#ti').value.trim();
-      if (!title) return toast('Every book needs its title.');
+      if (!title) { toast('Every book needs its title.'); return null; }
       const b = { id: DB.uid(), title, cover: coverFile ? await readAsBlob(coverFile) : null, pages: [], createdAt: Date.now() };
       await DB.books.save(b);
-      toast('“' + title + '” is on the shelf.');
-      go(S.params.returnTo || 'books');
+      return b;
+    }
+    card.querySelector('#save').onclick = async () => {
+      const b = await createBook();
+      if (!b) return;
+      toast('“' + b.title + '” is on the shelf.');
+      // land where the features are: back into the record flow if we came from
+      // there, otherwise the book's own page (record / import / ask / design).
+      if (S.params.returnTo === 'recWhat') go('recWhat');
+      else go('bookDetail', { bookId: b.id });
+    };
+    card.querySelector('#design').onclick = async () => {
+      const b = await createBook();
+      if (!b) return;
+      go('studio', { bookId: b.id, returnTo: S.params.returnTo === 'recWhat' ? 'recWhat' : null });
     };
     const back = el('<button class="back">‹ the library</button>');
     back.onclick = () => go('books');
@@ -964,18 +1026,23 @@
       if (prev) ctx.putImageData(prev, 0, 0);
     };
     wrap.querySelector('#clear').onclick = () => { snapshot(); paintBg(bg); };
+    const leave = () => {
+      if (S.mode === 'kid') return go('shelf');
+      if (S.params.returnTo === 'recWhat') return go('recWhat');
+      go('bookDetail', { bookId: book.id });
+    };
     wrap.querySelector('#save').onclick = () => {
       cv.toBlob(async blob => {
         book.cover = blob;
         await DB.books.save(book);
         dropURL('cover-' + book.id);
         toast('The artist’s cover is on the shelf. 🖍️');
-        go('bookDetail', { bookId: book.id });
+        leave();
       }, 'image/png');
     };
 
-    const back = el('<button class="back">‹ back to the book</button>');
-    back.onclick = () => go('bookDetail', { bookId: book.id });
+    const back = el('<button class="back">' + (S.mode === 'kid' ? '‹ back to the shelf' : '‹ back') + '</button>');
+    back.onclick = leave;
     root.appendChild(back);
   }
 
@@ -1081,7 +1148,7 @@
       root.appendChild(card);
       card.querySelector('#next').onclick = () => {
         S.rec.storyTitle = card.querySelector('#st').value.trim() || 'A bedtime story';
-        go('recPass1');
+        go(S.rec.audioBlob ? 'recPass2' : 'recPass1');
       };
       const back = el('<button class="back">‹ what are we reading</button>');
       back.onclick = () => go('recWhat');
@@ -1098,7 +1165,7 @@
     const whole = el('<button class="pick"><span class="av" style="background:var(--accent)">📖</span>' +
       '<span><span class="nm">The whole book</span><br><span class="rel">one sitting, start to finish</span></span>' +
       '<span class="spacer"></span><span class="chev">›</span></button>');
-    whole.onclick = () => { S.rec.episode = false; go('recPass1'); };
+    whole.onclick = () => { S.rec.episode = false; go(S.rec.audioBlob ? 'recPass2' : 'recPass1'); };
     stack.appendChild(whole);
     const chap = el('<button class="pick"><span class="av" style="background:var(--warm)">' + nextIdx + '</span>' +
       '<span><span class="nm">' + (nextIdx === 1 ? 'Start it as a serial — Chapter 1' : 'The next chapter — Chapter ' + nextIdx) + '</span><br>' +
@@ -1108,7 +1175,7 @@
       S.rec.episode = true; S.rec.episodeIndex = nextIdx;
       const t = prompt('A name for this chapter? (optional)', '');
       S.rec.episodeTitle = (t || '').trim();
-      go('recPass1');
+      go(S.rec.audioBlob ? 'recPass2' : 'recPass1');
     };
     stack.appendChild(chap);
     root.appendChild(stack);
@@ -1136,7 +1203,9 @@
       '<button class="btn big" id="pause" style="display:none">❘❘ Pause</button>' +
       '<button class="btn primary big" id="stop" style="display:none">■ Done reading</button>' +
       '</div>' +
-      '<p class="rec-note">…or bring a recording you already have — a voice memo from Grandma’s phone works beautifully.</p>' +
+      '<p class="rec-note">…or bring a recording you already have — a voice memo works beautifully. ' +
+      '<b>iPhone:</b> in Voice Memos tap ⋯ on the memo → Share → <b>Save to Files</b>, then pick it here. ' +
+      '<b>Android:</b> share the memo straight to Catherine’s Corner (once it’s on your home screen) and it appears in grown-up mode by itself.</p>' +
       '<div class="btn-row" style="justify-content:center">' +
       '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp" accept="audio/*"></span>' +
       '</div></div>');
@@ -1401,5 +1470,5 @@
   }
 
   // ---------- boot ----------
-  render();
+  checkSharedInbox().finally(render);
 })();
