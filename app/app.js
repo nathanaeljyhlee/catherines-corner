@@ -6,7 +6,11 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.3.2';
+  const APP_VERSION = '1.3.3';
+  // iOS Safari mishandles accept="audio/*" on file inputs (greys out audio in
+  // Files, offers only video/camera). There: no accept filter, validate in JS.
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const AV_COLORS = ['#34557A', '#D08A4E', '#5B7B5A', '#8A5A83', '#A85B4B', '#446A92', '#7A6A34'];
 
   // ---------- tiny helpers ----------
@@ -1267,7 +1271,8 @@
       '<p class="rec-note">…or bring a recording you already have — a voice memo works beautifully. ' +
       '<a href="#" id="p1help">Step-by-step: getting a voice memo in</a></p>' +
       '<div class="btn-row" style="justify-content:center">' +
-      '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp" accept="audio/*,.m4a,.aac,.mp3,.wav,.caf"></span>' +
+      '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp"' +
+      (IS_IOS ? '' : ' accept="audio/*,.m4a,.aac,.mp3,.wav,.caf"') + '></span>' +
       '</div></div>');
     root.appendChild(hero);
 
@@ -1330,15 +1335,26 @@
       // iOS hands over .m4a with a missing/odd mime type — normalize so
       // playback, backups, and download names all treat it as audio/mp4.
       const blob = Backup.normalizeAudioFile(f);
-      S.rec.audioBlob = blob;
-      S.rec.imported = true;
       const url = URL.createObjectURL(blob);
       const a = new Audio(url);
-      a.onloadedmetadata = () => { S.rec.duration = isFinite(a.duration) ? a.duration : 0; URL.revokeObjectURL(url); go('recPass2'); };
-      a.onerror = () => {
-        S.rec.duration = 0; URL.revokeObjectURL(url);
-        toast('Couldn’t read that recording’s length here — it’s kept as-is and will play where the format is supported.');
+      const accept = duration => {
+        URL.revokeObjectURL(url);
+        S.rec.audioBlob = blob;
+        S.rec.duration = duration;
+        S.rec.imported = true;
         go('recPass2');
+      };
+      a.onloadedmetadata = () => accept(isFinite(a.duration) ? a.duration : 0);
+      a.onerror = () => {
+        URL.revokeObjectURL(url);
+        if ((blob.type || '').startsWith('audio/')) {
+          // declared audio but this device can't read its length — keep it
+          toast('Couldn’t read that recording’s length here — it’s kept as-is and will play where the format is supported.');
+          accept(0);
+        } else {
+          e.target.value = '';
+          toast('That file doesn’t look like a recording — pick an audio file (a voice memo works).');
+        }
       };
     };
 
