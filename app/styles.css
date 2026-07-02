@@ -177,6 +177,21 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 
 .back{border:none; background:none; color:var(--muted); font-size:13px; padding:0; margin:14px 0 0; text-decoration:underline; text-underline-offset:3px}
 
+/* cover studio */
+.studio-wrap{display:flex; flex-direction:column; gap:14px; align-items:center}
+.studio-canvas{width:100%; max-width:340px; aspect-ratio:3/4; border:2px solid var(--line); border-radius:16px;
+  background:#fff; touch-action:none; box-shadow:0 18px 40px -30px var(--shadow); cursor:crosshair; display:block}
+.studio-tools{display:flex; flex-direction:column; gap:10px; width:100%; max-width:340px}
+.tool-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:center}
+.swatch{width:34px; height:34px; border-radius:50%; border:3px solid #fff; box-shadow:0 0 0 1.5px var(--line); cursor:pointer; padding:0}
+.swatch.sel{box-shadow:0 0 0 3px var(--accent)}
+.stamp{width:40px; height:40px; border-radius:12px; border:1.5px solid var(--line); background:#fff; font-size:21px; padding:0}
+.stamp.sel{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent)}
+.brushsize{width:40px; height:40px; border-radius:12px; border:1.5px solid var(--line); background:#fff; display:grid; place-items:center; padding:0}
+.brushsize.sel{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent)}
+.brushsize i{border-radius:50%; background:var(--ink); display:block}
+.bgdot{width:28px; height:28px; border-radius:8px; border:1.5px solid var(--line); cursor:pointer; padding:0}
+
 .toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:var(--ink); color:#fff;
   padding:10px 18px; border-radius:999px; font-size:13.5px; box-shadow:0 14px 30px -12px var(--shadow); z-index:60;
   opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; text-align:center}
