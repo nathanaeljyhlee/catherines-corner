@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.3.3';
+  const APP_VERSION = '1.4.0';
   // iOS Safari mishandles accept="audio/*" on file inputs (greys out audio in
   // Files, offers only video/camera). There: no accept filter, validate in JS.
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -125,6 +125,59 @@
     for (const r of ranges) {
       if (t >= r.start && t < r.end - 40) { audio.currentTime = r.end / 1000; return; }
     }
+  }
+
+  // A real slider: tap anywhere on the track or drag the thumb to move through
+  // the recording — forwards and backwards, playing or paused.
+  function makeScrubber($track, audio, durFn, onSeek) {
+    let dragging = false;
+    function seekTo(clientX) {
+      const r = $track.getBoundingClientRect();
+      const d = durFn();
+      if (!d || !r.width) return;
+      audio.currentTime = Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * d;
+      if (onSeek) onSeek();
+    }
+    $track.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      dragging = true;
+      try { $track.setPointerCapture(e.pointerId); } catch (err) {}
+      seekTo(e.clientX);
+    });
+    $track.addEventListener('pointermove', e => { if (dragging) seekTo(e.clientX); });
+    $track.addEventListener('pointerup', () => { dragging = false; });
+    $track.addEventListener('pointercancel', () => { dragging = false; });
+  }
+
+  // How much is printed on a page — dark pixels stand in for text, so wordy
+  // pages get a bigger share of the recording when turns are suggested. The
+  // floor means a picture-only page still gets a beat of its own.
+  function pageInk(blob) {
+    return new Promise(resolve => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        let weight = 1;
+        try {
+          const w = 64;
+          const h = Math.max(8, Math.round(w * img.height / img.width)) || 64;
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          const x = c.getContext('2d');
+          x.drawImage(img, 0, 0, w, h);
+          const d = x.getImageData(0, 0, w, h).data;
+          let ink = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114 < 118) ink++;
+          }
+          weight = ink + w * h * 0.08;
+        } catch (err) { /* tainted or unreadable image — even share */ }
+        URL.revokeObjectURL(url);
+        resolve(weight);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(1); };
+      img.src = url;
+    });
   }
 
   // ---------- data helpers ----------
@@ -385,25 +438,25 @@
     const $pp = wrap.querySelector('#pp'), $fill = wrap.querySelector('#fill'), $time = wrap.querySelector('#time'), $track = wrap.querySelector('#track');
     let lastIdx = 0;
 
-    function tick() {
-      if (!player.audio) return;
-      applySkips(reading, audio);
-      const d = audio.duration && isFinite(audio.duration) ? audio.duration : (reading.duration || 0);
+    function dur() { return audio.duration && isFinite(audio.duration) ? audio.duration : (reading.duration || 0); }
+    function paintNow() {
+      const d = dur();
       $fill.style.width = d ? (audio.currentTime / d * 100) + '%' : '0%';
       $time.textContent = fmt(audio.currentTime) + (d ? ' / ' + fmt(d) : '');
       const idx = currentPageIndex(reading, audio.currentTime);
-      if (idx !== lastIdx) { lastIdx = idx; renderStage(idx); }
+      if (idx !== lastIdx || stage.querySelector('.calm')) { lastIdx = idx; renderStage(idx); }
+    }
+    function tick() {
+      if (!player.audio) return;
+      applySkips(reading, audio);
+      paintNow();
       player.raf = requestAnimationFrame(tick);
     }
     $pp.onclick = () => {
       if (audio.paused) { audio.play(); $pp.textContent = '❘❘'; tick(); }
       else { audio.pause(); $pp.textContent = '▶'; }
     };
-    $track.onclick = (e) => {
-      const r = $track.getBoundingClientRect();
-      const d = audio.duration && isFinite(audio.duration) ? audio.duration : (reading.duration || 0);
-      if (d) audio.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * d;
-    };
+    makeScrubber($track, audio, dur, paintNow);
     audio.onended = async () => {
       $pp.textContent = '▶';
       // the calm close — no autoplay, no feed
@@ -765,10 +818,13 @@
       const readers = await DB.readers.all();
       for (const st of told) {
         const rd = readers.find(r => r.id === st.readerId);
-        stack.appendChild(el(
+        const row = el(
           '<div class="rowitem"><span class="chip">🌙 told story</span>' +
           '<div class="grow"><div class="t">' + esc(st.title || 'A bedtime story') + '</div>' +
-          '<div class="d">told by ' + esc(rd ? rd.name : '') + ' · ' + fmt(st.duration || 0) + '</div></div></div>'));
+          '<div class="d">told by ' + esc(rd ? rd.name : '') + ' · ' + fmt(st.duration || 0) + '</div></div>' +
+          '<button class="btn" data-ed title="adjust the gentle skips">✎ edit</button></div>');
+        row.querySelector('[data-ed]').onclick = () => startEditFlow(st);
+        stack.appendChild(row);
       }
     }
     if (!books.length && !told.length) stack.appendChild(el('<div class="empty"><div class="big">📖</div>No books yet.</div>'));
@@ -844,9 +900,11 @@
         '<div class="grow"><div class="t">' + esc(label) + '</div>' +
         '<div class="d">' + esc(rd ? rd.name : '') + ' · ' + fmt(r.duration || 0) +
         ((r.skipRanges || []).length ? ' · ' + r.skipRanges.length + ' gentle skip' + (r.skipRanges.length > 1 ? 's' : '') : '') + '</div></div>' +
+        '<button class="btn" data-ed title="adjust the pages, turns and skips">✎ edit</button>' +
         '<button class="btn" data-dl>⤓ keep a copy</button>' +
         '<button class="btn" data-vx>🎞 video</button>' +
         '<button class="btn danger" data-x>delete</button></div>');
+      row.querySelector('[data-ed]').onclick = () => startEditFlow(r);
       row.querySelector('[data-dl]').onclick = () => {
         const a = document.createElement('a');
         a.href = blobURL('aud-' + r.id, r.audioBlob);
@@ -1125,11 +1183,37 @@
     go('recWho');
   }
 
-  function stepper(now) {
-    const steps = ['Who’s reading', 'What are we reading', 'Read & record', 'Line up the pages', 'Saved'];
-    return '<div class="stepper">' + steps.map((s, i) =>
-      '<span class="' + (i < now ? 'done' : i === now ? 'now' : '') + '">' + (i + 1) + ' · ' + s + '</span>').join('') + '</div>';
+  // Reopen a saved reading in the pass-2 editor: page turns, page photos and
+  // gentle skips stay editable after the book is done.
+  function startEditFlow(reading) {
+    S.rec = {
+      editingId: reading.id,
+      readerId: reading.readerId, bookId: reading.bookId || null, requestId: null,
+      told: !reading.bookId, storyTitle: reading.title || '',
+      episode: reading.episodeIndex != null, episodeIndex: reading.episodeIndex, episodeTitle: reading.title || '',
+      audioBlob: reading.audioBlob, duration: reading.duration || 0, imported: !!reading.imported,
+      pageTurns: (reading.pageTurns || []).slice(), skipRanges: (reading.skipRanges || []).slice(),
+    };
+    go('recPass2');
   }
+
+  // Completed steps are buttons: any earlier step can be revisited without
+  // losing what's already been chosen or recorded.
+  function stepper(now, opts) {
+    const linkable = !(opts && opts.static);
+    const steps = ['Who’s reading', 'What are we reading', 'Read & record', 'Line up the pages', 'Saved'];
+    return '<div class="stepper">' + steps.map((s, i) => {
+      const label = (i + 1) + ' · ' + s;
+      if (i < now && linkable) return '<button type="button" class="done" data-step="' + i + '" title="go back to this step">' + label + '</button>';
+      return '<span class="' + (i < now ? 'done' : i === now ? 'now' : '') + '">' + label + '</span>';
+    }).join('') + '</div>';
+  }
+  const STEP_SCREENS = ['recWho', 'recWhat', 'recPass1', 'recPass2'];
+  $app.addEventListener('click', e => {
+    const b = e.target.closest('.stepper [data-step]');
+    if (!b || !S.rec) return;
+    go(STEP_SCREENS[+b.dataset.step] || 'recWho');
+  });
 
   async function recWho(root) {
     const readers = await DB.readers.all();
@@ -1169,8 +1253,10 @@
           '<span><span class="nm">' + esc(bk ? bk.title : q.bookTitle) + '</span><br><span class="rel">' + (q.note ? '“' + esc(q.note) + '”' : 'an open request') + '</span></span>' +
           '<span class="spacer"></span><span class="chev">›</span></button>');
         p.onclick = () => {
-          if (bk) { S.rec.bookId = bk.id; S.rec.requestId = q.id; go('recShape'); }
-          else toast('Add “' + q.bookTitle + '” to the library first, then record it.');
+          if (bk) {
+            if (S.rec.bookId !== bk.id) { S.rec.pageTurns = []; S.rec.newPages = []; } // another book's stamps/photos don't carry over
+            S.rec.told = false; S.rec.bookId = bk.id; S.rec.requestId = q.id; go('recShape');
+          } else toast('Add “' + q.bookTitle + '” to the library first, then record it.');
         };
         st.appendChild(p);
       }
@@ -1183,7 +1269,10 @@
       const p = el('<button class="rowitem">' + cover +
         '<div class="grow"><div class="t">' + esc(b.title) + '</div><div class="d">' + (b.pages || []).length + ' page photos already captured</div></div>' +
         '<span class="chev">›</span></button>');
-      p.onclick = () => { S.rec.bookId = b.id; go('recShape'); };
+      p.onclick = () => {
+        if (S.rec.bookId !== b.id) { S.rec.pageTurns = []; S.rec.newPages = []; } // another book's stamps/photos don't carry over
+        S.rec.told = false; S.rec.bookId = b.id; go('recShape');
+      };
       stack.appendChild(p);
     }
     root.appendChild(stack);
@@ -1195,7 +1284,7 @@
       '</div>');
     root.appendChild(row);
     row.querySelector('#newb').onclick = () => go('addBook', { returnTo: 'recWhat' });
-    row.querySelector('#told').onclick = () => { S.rec.told = true; S.rec.bookId = null; go('recShape'); };
+    row.querySelector('#told').onclick = () => { S.rec.told = true; S.rec.bookId = null; S.rec.pageTurns = []; S.rec.newPages = []; go('recShape'); };
     const back = el('<button class="back">‹ who’s reading</button>');
     back.onclick = () => go('recWho');
     root.appendChild(back);
@@ -1258,6 +1347,16 @@
     root.appendChild(el(stepper(2) +
       '<h1 class="screen-title">Pass 1 — read & record</h1>' +
       '<p class="screen-sub">Just read ' + esc(what) + ' the way you always do. No camera, no page-tapping — that comes after, calmly. If little voices interrupt, pause, or keep it in: the interruptions are often the treasure.</p>'));
+
+    // Came back from a later step? The recording made earlier is still here.
+    if (S.rec.audioBlob) {
+      const keep = el(
+        '<div class="card" style="margin-bottom:14px; border-color:var(--warm)"><div class="kicker">already recorded</div>' +
+        '<p class="hint" style="margin-top:6px">Your ' + fmt(S.rec.duration || 0) + ' recording from before is safe. Keep it — or record or import below to replace it.</p>' +
+        '<div class="btn-row" style="margin-top:10px"><button class="btn primary" id="keep">Keep it — line up the pages ›</button></div></div>');
+      keep.querySelector('#keep').onclick = () => go('recPass2');
+      root.appendChild(keep);
+    }
 
     const hero = el(
       '<div class="rec-hero">' +
@@ -1364,46 +1463,58 @@
   }
 
   async function recPass2(root) {
+    const editing = !!S.rec.editingId;
     const book = S.rec.bookId ? await DB.books.get(S.rec.bookId) : null;
     const pages = book ? (book.pages || []).slice() : [];
-    let newPages = [];   // added this session (stored onto the Book at save)
-    let turns = [];      // ms timestamps
-    let skips = S.rec.skipRanges.slice();
+    // Pages added this session live on the draft (stored onto the Book at
+    // save), so stepping back to re-record doesn't throw the photos away.
+    S.rec.newPages = S.rec.newPages || [];
+    const newPages = S.rec.newPages;
+    let turns = (S.rec.pageTurns || []).slice().sort((a, b) => a - b);   // ms timestamps
+    let skips = (S.rec.skipRanges || []).slice();
     let skipStart = null;
+    // Every change lands back on the draft, so stepping back and forth — or
+    // an accidental re-render — never loses the taps.
+    function sync() { S.rec.pageTurns = turns.slice(); S.rec.skipRanges = skips.slice(); }
 
-    root.appendChild(el(stepper(3) +
-      '<h1 class="screen-title">Pass 2 — line up the pages</h1>' +
+    root.appendChild(el((editing ? '' : stepper(3)) +
+      '<h1 class="screen-title">' + (editing ? 'Adjust the pages & turns' : 'Pass 2 — line up the pages') + '</h1>' +
       '<p class="screen-sub">' + (S.rec.told
         ? 'A told story needs no pages — listen back if you like, mark anything to skip gently, and save.'
-        : 'Play your reading back and, as you listen, tap at each page turn. Add page photos (or the child’s drawings) — or reuse the ones this book already has.') + '</p>'));
+        : 'Play your reading back — or drag the slider anywhere — and tap at each page turn. Not sure where they fall? ✨ Suggest the turns looks at how much is printed on each page and spaces them out; every turn stays fixable.') + '</p>'));
 
     const url = URL.createObjectURL(S.rec.audioBlob);
     const audio = new Audio(url);
+    player.audio = audio; // registered so navigating anywhere else stops playback
     const bar = el(
       '<div class="player"><div class="p-bar" style="border-top:none">' +
       '<button class="p-play" id="pp">▶</button>' +
+      '<button class="p-nudge" id="b5" aria-label="back five seconds">↺5</button>' +
+      '<button class="p-nudge" id="f5" aria-label="forward five seconds">5↻</button>' +
       '<div class="p-track" id="track"><i id="fill"></i></div>' +
       '<span class="p-time" id="time">0:00</span></div></div>');
     root.appendChild(bar);
     const $pp = bar.querySelector('#pp'), $fill = bar.querySelector('#fill'), $time = bar.querySelector('#time'), $track = bar.querySelector('#track');
     let raf = null;
     function dur() { return audio.duration && isFinite(audio.duration) ? audio.duration : (S.rec.duration || 0); }
-    function tick() {
+    function paintBar() {
       const d = dur();
       $fill.style.width = d ? (audio.currentTime / d * 100) + '%' : '0%';
       $time.textContent = fmt(audio.currentTime) + ' / ' + fmt(d);
       paintStrip();
+    }
+    function tick() {
+      if (player.audio !== audio) return;
+      paintBar();
       raf = requestAnimationFrame(tick);
     }
     $pp.onclick = () => {
       if (audio.paused) { audio.play(); $pp.textContent = '❘❘'; tick(); }
       else { audio.pause(); $pp.textContent = '▶'; if (raf) cancelAnimationFrame(raf); }
     };
-    $track.onclick = e => {
-      const r = $track.getBoundingClientRect();
-      const d = dur();
-      if (d) audio.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * d;
-    };
+    makeScrubber($track, audio, dur, paintBar);
+    bar.querySelector('#b5').onclick = () => { audio.currentTime = Math.max(0, audio.currentTime - 5); paintBar(); };
+    bar.querySelector('#f5').onclick = () => { const d = dur(); audio.currentTime = d ? Math.min(d, audio.currentTime + 5) : audio.currentTime + 5; paintBar(); };
     audio.onended = () => { $pp.textContent = '▶'; if (raf) cancelAnimationFrame(raf); };
 
     let strip = null, tapBtn = null;
@@ -1412,20 +1523,24 @@
         '<div style="margin-top:16px"><div class="kicker">the pages</div>' +
         '<div class="pagestrip" id="strip"></div>' +
         '<div class="btn-row">' +
-        '<button class="btn warm big" id="tap" ' + (pages.length ? '' : 'disabled') + '>👆 Tap — page turn</button>' +
+        '<button class="btn warm big" id="tap" ' + (pages.length + newPages.length ? '' : 'disabled') + '>👆 Tap — page turn</button>' +
+        '<button class="btn" id="suggest" ' + (pages.length + newPages.length > 1 ? '' : 'disabled') + '>✨ Suggest the turns</button>' +
         '<button class="btn" id="undo">undo last turn</button>' +
         '<span class="btn filebtn">📷 Add page photos<input type="file" id="pgs" accept="image/*" multiple></span>' +
         '</div>' +
-        '<p class="hint">Each tap while listening stamps when the next page appears. ' + (pages.length ? 'This book already has its pages — just tap along.' : '') + '</p></div>');
+        '<p class="hint">Each tap while listening stamps when the next page appears. Tap a page to jump to its moment; tap a stamped time to remove that turn. ' +
+        (pages.length ? 'This book already has its pages — just tap along.' : '') + '</p></div>');
       root.appendChild(sec);
       strip = sec.querySelector('#strip');
       tapBtn = sec.querySelector('#tap');
+      const sgBtn = sec.querySelector('#suggest');
       sec.querySelector('#pgs').onchange = async e => {
         for (const f of e.target.files) {
           const type = confirmType();
           newPages.push({ id: DB.uid(), type, blob: await readAsBlob(f) });
         }
         tapBtn.disabled = false;
+        sgBtn.disabled = pages.concat(newPages).length < 2;
         paintStrip(true);
       };
       function confirmType() { return 'book_page'; } // typed art is a tap away post-v1; default = page of the book
@@ -1434,9 +1549,27 @@
         if (turns.length >= all.length - 1 && all.length) { toast('That’s every page — lovely.'); return; }
         turns.push(Math.round(audio.currentTime * 1000));
         turns.sort((a, b) => a - b);
+        sync();
         paintStrip();
       };
-      sec.querySelector('#undo').onclick = () => { turns.pop(); paintStrip(); };
+      sec.querySelector('#undo').onclick = () => { turns.pop(); sync(); paintStrip(); };
+      // Suggested turns: split the recording across the pages in proportion to
+      // how much text each page photo carries — a starting point to fix by ear.
+      sgBtn.onclick = async () => {
+        const all = pages.concat(newPages);
+        if (all.length < 2) return toast('Add the page photos first — then turns can be suggested.');
+        const d = dur();
+        if (!d) return toast('This recording’s length isn’t known yet — press play for a moment first.');
+        sgBtn.disabled = true; sgBtn.textContent = '✨ reading the pages…';
+        const weights = await Promise.all(all.map(p => pageInk(p.blob)));
+        const total = weights.reduce((a, b) => a + b, 0) || all.length;
+        let acc = 0;
+        const out = [];
+        for (let i = 0; i < all.length - 1; i++) { acc += weights[i]; out.push(Math.round((acc / total) * d * 1000)); }
+        turns = out; sync(); paintStrip();
+        sgBtn.disabled = false; sgBtn.textContent = '✨ Suggest the turns';
+        toast('Turns placed by each page’s text — play it back and fix any of them by tapping or dragging the slider.');
+      };
     }
 
     function paintStrip(rebuild) {
@@ -1445,8 +1578,19 @@
       if (rebuild || strip.childElementCount !== all.length + 1) {
         strip.innerHTML = '';
         all.forEach((p, i) => {
-          strip.appendChild(el('<div class="pg" data-i="' + i + '">' +
-            '<img alt="" src="' + blobURL('pg-' + p.id, p.blob) + '"><span class="k">' + (i + 1) + '</span><span class="stamp" style="display:none"></span></div>'));
+          const pg = el('<div class="pg" data-i="' + i + '">' +
+            '<img alt="" src="' + blobURL('pg-' + p.id, p.blob) + '"><span class="k">' + (i + 1) + '</span><span class="stamp" style="display:none"></span></div>');
+          pg.querySelector('img').onclick = () => {
+            const t = i === 0 ? 0 : turns[i - 1];
+            if (t == null) return;
+            audio.currentTime = t / 1000;
+            paintBar();
+          };
+          pg.querySelector('.stamp').onclick = () => {
+            if (turns[i - 1] == null) return;
+            turns.splice(i - 1, 1); sync(); paintStrip();
+          };
+          strip.appendChild(pg);
         });
         const add = el('<button class="addpg">+ add<br>photos</button>');
         add.onclick = () => strip.parentElement.querySelector('#pgs').click();
@@ -1456,8 +1600,11 @@
       strip.querySelectorAll('.pg').forEach((n, i) => {
         n.classList.toggle('current', i === cur);
         const st = n.querySelector('.stamp');
-        if (i > 0 && turns[i - 1] != null) { st.style.display = ''; st.textContent = fmt(turns[i - 1] / 1000); }
-        else st.style.display = 'none';
+        if (i > 0 && turns[i - 1] != null) {
+          st.style.display = '';
+          st.textContent = fmt(turns[i - 1] / 1000) + ' ×';
+          st.title = 'remove this turn';
+        } else st.style.display = 'none';
       });
     }
     paintStrip(true);
@@ -1474,7 +1621,7 @@
       $sl.innerHTML = '';
       skips.forEach((r, i) => {
         const row = el('<div class="sk">skip ' + fmt(r.start / 1000) + ' → ' + fmt(r.end / 1000) + '<button>keep it in</button></div>');
-        row.querySelector('button').onclick = () => { skips.splice(i, 1); paintSkips(); };
+        row.querySelector('button').onclick = () => { skips.splice(i, 1); sync(); paintSkips(); };
         $sl.appendChild(row);
       });
     }
@@ -1484,21 +1631,41 @@
       else {
         if (t > skipStart + 200) skips.push({ start: skipStart, end: t });
         skipStart = null; $sk.textContent = '⏱ Start a skip here'; $sk.classList.remove('warm');
+        sync();
         paintSkips();
       }
     };
     paintSkips();
 
+    function leaveEdit() {
+      audio.pause(); if (raf) cancelAnimationFrame(raf);
+      URL.revokeObjectURL(url);
+      const bookId = S.rec.bookId;
+      S.rec = null;
+      go(bookId ? 'bookDetail' : 'books', bookId ? { bookId } : {});
+    }
+
     const saveRow = el(
       '<div class="btn-row" style="margin-top:18px">' +
-      '<button class="btn primary big" id="save">Save the reading</button>' +
-      '<button class="btn danger" id="discard">discard</button></div>');
+      '<button class="btn primary big" id="save">' + (editing ? 'Save the changes' : 'Save the reading') + '</button>' +
+      '<button class="btn danger" id="discard">' + (editing ? 'cancel' : 'discard') + '</button></div>');
     root.appendChild(saveRow);
     saveRow.querySelector('#save').onclick = async () => {
       audio.pause(); if (raf) cancelAnimationFrame(raf);
       if (book && newPages.length) {
         book.pages = pages.concat(newPages);
         await DB.books.save(book);
+      }
+      if (editing) {
+        const existing = await DB.readings.get(S.rec.editingId);
+        if (existing) {
+          existing.pageTurns = turns;
+          existing.skipRanges = skips;
+          await DB.readings.save(existing);
+          toast('Saved — the shelf plays it the new way.');
+        }
+        leaveEdit();
+        return;
       }
       const reading = {
         id: DB.uid(),
@@ -1526,9 +1693,19 @@
       go('recDone', { readingId: reading.id });
     };
     saveRow.querySelector('#discard').onclick = () => {
+      if (editing) return leaveEdit();
       if (!confirm('Throw this recording away?')) return;
       audio.pause(); URL.revokeObjectURL(url); S.rec = null; go('home');
     };
+
+    const back = el('<button class="back">' + (editing ? '‹ back (nothing changes)' : '‹ read & record') + '</button>');
+    back.onclick = () => {
+      if (editing) return leaveEdit();
+      audio.pause(); if (raf) cancelAnimationFrame(raf);
+      URL.revokeObjectURL(url);
+      go('recPass1');
+    };
+    root.appendChild(back);
   }
 
   async function recDone(root, cornerName) {
@@ -1536,7 +1713,7 @@
     const reader = await DB.readers.get(reading.readerId);
     const book = reading.bookId ? await DB.books.get(reading.bookId) : null;
     const what = book ? book.title + (reading.episodeIndex != null ? ' — Chapter ' + reading.episodeIndex : '') : (reading.title || 'A bedtime story');
-    root.appendChild(el(stepper(4) +
+    root.appendChild(el(stepper(4, { static: true }) +
       '<div class="rec-hero"><div style="font-size:44px">🌟</div>' +
       '<h1 class="screen-title" style="margin-top:10px">' + esc(reader ? reader.name : 'Your') + '’s reading is ready</h1>' +
       '<p class="screen-sub" style="margin:6px auto 0; max-width:44ch">“' + esc(what) + '” is on ' + esc(cornerName ? cornerName + '’s' : 'the') + ' shelf' +
@@ -1544,12 +1721,15 @@
       '<div class="btn-row" style="justify-content:center; margin-top:20px">' +
       '<button class="btn primary big" id="kid">See the shelf (kid mode)</button>' +
       (book ? '<button class="btn" id="another">Record the next chapter</button>' : '') +
+      '<button class="btn" id="adjust">✎ Adjust the pages & turns</button>' +
       '<button class="btn ghost" id="home">grown-up home</button>' +
       '</div>' +
-      '<p class="hint" style="margin-top:16px">Alpha reminder: this reading lives only on this device until you back it up (Keep it safe).</p>' +
+      '<p class="hint" style="margin-top:16px">Changed your mind about a turn or a skip? Nothing is locked — adjust it now, or any time later from the library.</p>' +
+      '<p class="hint" style="margin-top:8px">Alpha reminder: this reading lives only on this device until you back it up (Keep it safe).</p>' +
       '</div>'));
     root.querySelector('#kid').onclick = () => { S.mode = 'kid'; go('shelf'); };
     if (book) root.querySelector('#another').onclick = () => startRecordFlow({ bookId: book.id, readerId: reading.readerId });
+    root.querySelector('#adjust').onclick = () => startEditFlow(reading);
     root.querySelector('#home').onclick = () => go('home');
   }
 
