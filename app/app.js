@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.4.0';
+  const APP_VERSION = '1.5.0';
   // iOS Safari mishandles accept="audio/*" on file inputs (greys out audio in
   // Files, offers only video/camera). There: no accept filter, validate in JS.
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -762,10 +762,19 @@
       '<p class="screen-sub">Only people you add here can record. No strangers, ever.</p>'));
     const stack = el('<div class="stack"></div>');
     for (const r of readers) {
+      const contact = [r.email, r.phone].filter(Boolean).join(' · ');
       const row = el(
         '<div class="rowitem">' + avatar(r) +
-        '<div class="grow"><div class="t">' + esc(r.name) + '</div><div class="d">' + esc(r.relationship || '') + '</div></div>' +
+        '<div class="grow"><div class="t">' + esc(r.name) + '</div><div class="d">' + esc(r.relationship || '') + (contact ? ' · ' + esc(contact) : '') + '</div></div>' +
+        '<button class="btn" data-c title="email & phone — used to send book requests">✉️ contact</button>' +
         '<button class="btn danger" data-x>remove</button></div>');
+      row.querySelector('[data-c]').onclick = async () => {
+        const em = prompt('Email for ' + r.name + '? (used to send book requests — leave blank for none)', r.email || '');
+        if (em !== null) r.email = em.trim() || null;
+        const ph = prompt('Phone number for ' + r.name + '? (used to text book requests — leave blank for none)', r.phone || '');
+        if (ph !== null) r.phone = ph.trim() || null;
+        if (em !== null || ph !== null) { await DB.readers.save(r); render(); }
+      };
       row.querySelector('[data-x]').onclick = async () => {
         const rs = (await DB.readings.all()).filter(x => x.readerId === r.id);
         if (rs.length) return toast(r.name + ' has recordings on the shelf — those stay; remove them first.');
@@ -779,6 +788,8 @@
       '<div class="card" style="margin-top:14px"><div class="kicker">add someone</div>' +
       '<div class="field" style="margin-top:10px"><label>Name</label><input type="text" id="nm" placeholder="e.g. Grandma Rose"></div>' +
       '<div class="field"><label>Who they are to the child</label><input type="text" id="rel" placeholder="e.g. Grandma"></div>' +
+      '<div class="field"><label>Email (optional — so book requests can be emailed to them)</label><input type="email" id="em" placeholder="e.g. rose@example.com"></div>' +
+      '<div class="field"><label>Phone (optional — so book requests can be texted to them)</label><input type="tel" id="ph" placeholder="e.g. +1 555 010 1234"></div>' +
       '<button class="btn primary" id="add">Add reader</button></div>');
     root.appendChild(card);
     card.querySelector('#add').onclick = async () => {
@@ -786,6 +797,8 @@
       if (!name) return toast('A name, so the child knows whose voice it is.');
       await DB.readers.save({
         id: DB.uid(), name, relationship: card.querySelector('#rel').value.trim(),
+        email: card.querySelector('#em').value.trim() || null,
+        phone: card.querySelector('#ph').value.trim() || null,
         color: AV_COLORS[(await DB.readers.all()).length % AV_COLORS.length], createdAt: Date.now(),
       });
       render();
@@ -956,29 +969,63 @@
     root.appendChild(back);
   }
 
+  // The words that travel to the loved one — with or without a chosen book.
+  function requestMessage(kid, bookTitle, note) {
+    return (kid || 'Someone little') + ' would love you to read ' +
+      (bookTitle ? '“' + bookTitle + '” aloud' : 'them a story aloud — any book you love') +
+      ' for their Catherine’s Corner' + (note ? ' — “' + note + '”' : '') +
+      '. Record it on your phone (a voice memo is perfect) and send it over; it goes straight onto their shelf.';
+  }
+
   async function adultRequests(root, cornerName) {
     const [requests, books, readers] = await Promise.all([DB.requests.all(), DB.books.all(), DB.readers.all()]);
     root.appendChild(el(
       '<h1 class="screen-title">Book requests</h1>' +
-      '<p class="screen-sub">' + esc(cornerName || 'Your child') + ' asks; a loved one records — from anywhere. Share the request; when the recording is made here, mark it read.</p>'));
+      '<p class="screen-sub">' + esc(cornerName || 'Your child') + ' asks; a loved one records — from anywhere. Send the request straight to their email or phone; when the recording is made here, mark it read.</p>'));
 
     const stack = el('<div class="stack"></div>');
     for (const q of requests.sort((a, b) => b.createdAt - a.createdAt)) {
       const rd = readers.find(r => r.id === q.readerId);
       const bk = books.find(b => b.id === q.bookId);
+      const what = bk ? bk.title : (q.bookTitle || 'Anything they love — reader’s pick');
       const row = el(
-        '<div class="rowitem"><span class="chip ' + (q.status === 'open' ? 'open' : '') + '">' + (q.status === 'open' ? 'open' : 'read ✓') + '</span>' +
-        '<div class="grow"><div class="t">' + esc(bk ? bk.title : q.bookTitle || 'A book') + '</div>' +
-        '<div class="d">asked of ' + esc(rd ? rd.name : 'anyone who loves them') + (q.note ? ' · “' + esc(q.note) + '”' : '') + '</div></div>' +
+        '<div class="rowitem reqitem">' +
+        '<div class="reqhead"><span class="chip ' + (q.status === 'open' ? 'open' : '') + '">' + (q.status === 'open' ? 'open' : 'read ✓') + '</span>' +
+        '<div class="grow"><div class="t">' + esc(what) + '</div>' +
+        '<div class="d">asked of ' + esc(rd ? rd.name : 'anyone who loves them') + (q.note ? ' · “' + esc(q.note) + '”' : '') + '</div></div></div>' +
         (q.status === 'open'
-          ? '<button class="btn" data-share>share</button><button class="btn warm" data-rec>record now</button><button class="btn" data-done>mark read</button>'
-          : '<button class="btn danger" data-x>remove</button>') +
+          ? '<div class="btn-row reqbtns">' +
+            '<button class="btn" data-em title="opens your mail app with the request written out">✉️ email</button>' +
+            '<button class="btn" data-sm title="opens your messages app with the request written out">💬 text</button>' +
+            '<button class="btn" data-share>⧉ share</button>' +
+            '<button class="btn warm" data-rec>record now</button>' +
+            '<button class="btn" data-done>mark read</button></div>'
+          : '<div class="btn-row reqbtns"><button class="btn danger" data-x>remove</button></div>') +
         '</div>');
       if (q.status === 'open') {
+        const text = requestMessage(cornerName, bk ? bk.title : q.bookTitle, q.note);
+        // Hand mail/messages links to the OS the same way a tapped
+        // <a href="mailto:…"> would — the pattern phones handle best.
+        const launch = href => {
+          const a = document.createElement('a');
+          a.href = href;
+          a.rel = 'noopener';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        };
+        row.querySelector('[data-em]').onclick = () => {
+          launch('mailto:' + encodeURIComponent(rd && rd.email || '') +
+            '?subject=' + encodeURIComponent('A reading for ' + (cornerName || 'someone little')) +
+            '&body=' + encodeURIComponent(text));
+        };
+        row.querySelector('[data-sm]').onclick = () => {
+          const num = rd && rd.phone ? rd.phone.replace(/[^\d+]/g, '') : '';
+          // iOS wants "sms:num&body=", Android "sms:num?body=" — both open
+          // the messages app with the request typed and ready to send.
+          launch('sms:' + num + (IS_IOS ? '&' : '?') + 'body=' + encodeURIComponent(text));
+        };
         row.querySelector('[data-share]').onclick = async () => {
-          const kid = await DB.settings.get('cornerName');
-          const text = (kid || 'Someone little') + ' would love you to read “' + (bk ? bk.title : q.bookTitle) + '” aloud for their Catherine’s Corner' +
-            (q.note ? ' — “' + q.note + '”' : '') + '. Record it on your phone (voice memo is perfect) and send it over; it goes straight onto their shelf.';
           if (navigator.share) { try { await navigator.share({ text }); } catch (e) { /* user closed the sheet */ } }
           else { await navigator.clipboard.writeText(text); toast('Request copied — paste it into any message.'); }
         };
@@ -993,25 +1040,27 @@
     root.appendChild(stack);
 
     const card = el(
-      '<div class="card" style="margin-top:14px"><div class="kicker">ask for a book</div>' +
-      '<div class="field" style="margin-top:10px"><label>Which book?</label><select id="bk">' +
-      '<option value="">— pick from the library —</option>' +
+      '<div class="card" style="margin-top:14px"><div class="kicker">ask someone to read</div>' +
+      '<div class="field" style="margin-top:10px"><label>Ask whom?</label><select id="rd"><option value="">anyone who loves them</option>' +
+      readers.map(r => '<option value="' + r.id + '"' + (S.params.prefillReaderId === r.id ? ' selected' : '') + '>' + esc(r.name) +
+        (r.email || r.phone ? '' : ' (no email or phone saved)') + '</option>').join('') + '</select>' +
+      '<span class="hint">With an email or phone saved under “The people who read,” the ✉️ and 💬 buttons address the message for you.</span></div>' +
+      '<div class="field"><label>Which book? (optional — they can pick)</label><select id="bk">' +
+      '<option value="">any book they love — their pick</option>' +
       books.map(b => '<option value="' + b.id + '"' + (S.params.prefillBookId === b.id ? ' selected' : '') + '>' + esc(b.title) + '</option>').join('') +
       '</select><input type="text" id="bt" placeholder="…or type a title not in the library yet" style="margin-top:8px"></div>' +
-      '<div class="field"><label>Ask whom?</label><select id="rd"><option value="">anyone who loves them</option>' +
-      readers.map(r => '<option value="' + r.id + '">' + esc(r.name) + '</option>').join('') + '</select></div>' +
       '<div class="field"><label>A little note (optional)</label><input type="text" id="nt" placeholder="e.g. do the bear voice!"></div>' +
       '<button class="btn primary" id="add">Add the request</button></div>');
     root.appendChild(card);
     card.querySelector('#add').onclick = async () => {
       const bookId = card.querySelector('#bk').value || null;
       const bookTitle = card.querySelector('#bt').value.trim();
-      if (!bookId && !bookTitle) return toast('Which book shall we ask for?');
       await DB.requests.save({
-        id: DB.uid(), bookId, bookTitle: bookId ? null : bookTitle,
+        id: DB.uid(), bookId, bookTitle: bookId ? null : (bookTitle || null),
         readerId: card.querySelector('#rd').value || null,
         note: card.querySelector('#nt').value.trim(), status: 'open', createdAt: Date.now(),
       });
+      toast('Request added — send it on its way with ✉️ or 💬.');
       render();
     };
     const back = el('<button class="back">‹ grown-up home</button>');
@@ -1249,13 +1298,20 @@
       const st = box.querySelector('.stack');
       for (const q of requests) {
         const bk = books.find(b => b.id === q.bookId);
+        const anyBook = !q.bookId && !q.bookTitle;  // "read them anything" request
+        const sel = S.rec.requestId === q.id;
         const p = el('<button class="pick"><span class="av" style="background:var(--warm)">📬</span>' +
-          '<span><span class="nm">' + esc(bk ? bk.title : q.bookTitle) + '</span><br><span class="rel">' + (q.note ? '“' + esc(q.note) + '”' : 'an open request') + '</span></span>' +
-          '<span class="spacer"></span><span class="chev">›</span></button>');
+          '<span><span class="nm">' + esc(bk ? bk.title : (q.bookTitle || 'Anything you love — your pick')) + '</span><br>' +
+          '<span class="rel">' + (q.note ? '“' + esc(q.note) + '”' : 'an open request') + '</span></span>' +
+          '<span class="spacer"></span>' + (sel ? '<span class="chip open">✓ recording this</span>' : '<span class="chev">›</span>') + '</button>');
         p.onclick = () => {
           if (bk) {
             if (S.rec.bookId !== bk.id) { S.rec.pageTurns = []; S.rec.newPages = []; } // another book's stamps/photos don't carry over
             S.rec.told = false; S.rec.bookId = bk.id; S.rec.requestId = q.id; go('recShape');
+          } else if (anyBook) {
+            S.rec.requestId = sel ? null : q.id;
+            go('recWhat');
+            if (!sel) toast('Lovely — now pick the book below, or tell a story.');
           } else toast('Add “' + q.bookTitle + '” to the library first, then record it.');
         };
         st.appendChild(p);

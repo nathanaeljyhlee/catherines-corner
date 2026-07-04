@@ -186,6 +186,12 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .chip{font-size:11px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); background:var(--paper); color:var(--soft)}
 .chip.open{background:var(--highlight); border-color:#e7c79c; color:#7a5326}
 
+/* request rows: info on top, send/record actions beneath */
+.reqitem{flex-direction:column; align-items:stretch}
+.reqhead{display:flex; align-items:center; gap:12px}
+.reqbtns{margin-top:10px}
+.reqbtns .btn{padding:8px 13px; font-size:13px}
+
 .back{border:none; background:none; color:var(--muted); font-size:13px; padding:0; margin:14px 0 0; text-decoration:underline; text-underline-offset:3px}
 
 /* cover studio */
