@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.5.1';
   // iOS Safari mishandles accept="audio/*" on file inputs (greys out audio in
   // Files, offers only video/camera). There: no accept filter, validate in JS.
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -439,24 +439,26 @@
     let lastIdx = 0;
 
     function dur() { return audio.duration && isFinite(audio.duration) ? audio.duration : (reading.duration || 0); }
-    function paintNow() {
+    // userSeek: only a deliberate scrub may sweep the calm end-screen away —
+    // the frame loop must never repaint over it.
+    function paintNow(userSeek) {
       const d = dur();
       $fill.style.width = d ? (audio.currentTime / d * 100) + '%' : '0%';
       $time.textContent = fmt(audio.currentTime) + (d ? ' / ' + fmt(d) : '');
       const idx = currentPageIndex(reading, audio.currentTime);
-      if (idx !== lastIdx || stage.querySelector('.calm')) { lastIdx = idx; renderStage(idx); }
+      if (idx !== lastIdx || (userSeek && stage.querySelector('.calm'))) { lastIdx = idx; renderStage(idx); }
     }
     function tick() {
       if (!player.audio) return;
       applySkips(reading, audio);
-      paintNow();
+      paintNow(false);
       player.raf = requestAnimationFrame(tick);
     }
     $pp.onclick = () => {
       if (audio.paused) { audio.play(); $pp.textContent = '❘❘'; tick(); }
       else { audio.pause(); $pp.textContent = '▶'; }
     };
-    makeScrubber($track, audio, dur, paintNow);
+    makeScrubber($track, audio, dur, () => paintNow(true));
     audio.onended = async () => {
       $pp.textContent = '▶';
       // the calm close — no autoplay, no feed
