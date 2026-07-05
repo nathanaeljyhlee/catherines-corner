@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.5.2';
+  const APP_VERSION = '1.6.0';
   // iOS Safari mishandles accept="audio/*" on file inputs (greys out audio in
   // Files, offers only video/camera). There: no accept filter, validate in JS.
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -281,7 +281,8 @@
     if (!withReadings.length && !told.length) {
       root.appendChild(el(
         '<div class="empty"><div class="big">🌙</div>Nothing on the shelf yet.<br>' +
-        'A grown-up can record the first reading — tap “for grown-ups” above.</div>'));
+        'A grown-up can record the first reading — or invite someone far away to read one.<br>' +
+        'Tap “for grown-ups” above.</div>'));
       return;
     }
 
@@ -638,6 +639,17 @@
     }
     root.appendChild(grid);
 
+    // Before the first reading exists, the far-away option is easy to miss
+    // three levels deep — surface it right where the journey starts.
+    if (!readings.length) {
+      const inv = el(
+        '<button class="home-card" id="invite" style="margin-top:12px; width:100%; border-color:var(--warm); background:var(--highlight)">' +
+        '<span class="ic">💌</span><span class="t">Someone far away can read the first one</span>' +
+        '<span class="d">Send a book request to Grandma, Papa — anyone who loves ' + esc(cornerName || 'your child') + '. They record a voice memo, you tuck it onto the shelf.</span></button>');
+      inv.onclick = () => go('requests');
+      root.appendChild(inv);
+    }
+
     const helpLine = el('<p class="hint" style="margin-top:14px">🎙 Someone already recorded a voice memo on their phone? <a href="#" id="memohelp">Here’s how to bring it in</a>.</p>');
     helpLine.querySelector('#memohelp').onclick = e => { e.preventDefault(); go('memoHelp'); };
     root.appendChild(helpLine);
@@ -693,8 +705,9 @@
     if (isIOS) { root.appendChild(iosCard); root.appendChild(androidCard); }
     else { root.appendChild(androidCard); root.appendChild(iosCard); }
 
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
+    const backTo = S.params.returnTo === 'requests' ? 'requests' : 'home';
+    const back = el('<button class="back">' + (backTo === 'requests' ? '‹ book requests' : '‹ grown-up home') + '</button>');
+    back.onclick = () => go(backTo);
     root.appendChild(back);
   }
 
@@ -973,19 +986,61 @@
     root.appendChild(back);
   }
 
-  // The words that travel to the loved one — with or without a chosen book.
+  // ---------- sending words to loved ones ----------
+  // One shared kit for every "reach someone far away" moment: the invite to
+  // read (requests) and the thank-you once their reading is on the shelf.
+
+  // The words that travel with an invite. Honest about the loop: the memo
+  // comes back to the grown-up, who tucks it onto the shelf.
   function requestMessage(kid, bookTitle, note) {
     return (kid || 'Someone little') + ' would love you to read ' +
       (bookTitle ? '“' + bookTitle + '” aloud' : 'them a story aloud — any book you love') +
-      ' for their Catherine’s Corner' + (note ? ' — “' + note + '”' : '') +
-      '. Record it on your phone (a voice memo is perfect) and send it over; it goes straight onto their shelf.';
+      (note ? ' — “' + note + '”' : '') +
+      '. Just record yourself on your phone (a voice memo is perfect) and send it back to me — I’ll tuck it onto their shelf in Catherine’s Corner.';
+  }
+
+  // Hand mail/messages links to the OS the same way a tapped
+  // <a href="mailto:…"> would — the pattern phones handle best.
+  function launchHref(href) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  // A row of ✉️ / 💬 / ⧉ buttons that opens the right app with the message
+  // written out, pre-addressed from the reader's saved contact when there is
+  // one. Callers may append their own extra buttons to the returned row.
+  function sendRow(reader, subject, text) {
+    const row = el(
+      '<div class="btn-row rowbtns">' +
+      '<button class="btn" data-em title="opens your mail app with the message written out">✉️ email</button>' +
+      '<button class="btn" data-sm title="opens your messages app with the message written out">💬 text</button>' +
+      '<button class="btn" data-share>⧉ share</button></div>');
+    row.querySelector('[data-em]').onclick = () => {
+      launchHref('mailto:' + encodeURIComponent(reader && reader.email || '') +
+        '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(text));
+    };
+    row.querySelector('[data-sm]').onclick = () => {
+      const num = reader && reader.phone ? reader.phone.replace(/[^\d+]/g, '') : '';
+      // iOS wants "sms:num&body=", Android "sms:num?body=" — both open
+      // the messages app with the message typed and ready to send.
+      launchHref('sms:' + num + (IS_IOS ? '&' : '?') + 'body=' + encodeURIComponent(text));
+    };
+    row.querySelector('[data-share]').onclick = async () => {
+      if (navigator.share) { try { await navigator.share({ text }); } catch (e) { /* user closed the sheet */ } }
+      else { await navigator.clipboard.writeText(text); toast('Copied — paste it into any message.'); }
+    };
+    return row;
   }
 
   async function adultRequests(root, cornerName) {
     const [requests, books, readers] = await Promise.all([DB.requests.all(), DB.books.all(), DB.readers.all()]);
     root.appendChild(el(
       '<h1 class="screen-title">Book requests</h1>' +
-      '<p class="screen-sub">' + esc(cornerName || 'Your child') + ' asks; a loved one records — from anywhere. Send the request straight to their email or phone; when the recording is made here, mark it read.</p>'));
+      '<p class="screen-sub">' + esc(cornerName || 'Your child') + ' asks; a loved one records — from anywhere. Send the request straight to their email or phone; when their recording comes back, bring it in and it lands on the shelf.</p>'));
 
     const stack = el('<div class="stack"></div>');
     for (const q of requests.sort((a, b) => b.createdAt - a.createdAt)) {
@@ -997,44 +1052,21 @@
         '<div class="rowhead"><span class="chip ' + (q.status === 'open' ? 'open' : '') + '">' + (q.status === 'open' ? 'open' : 'read ✓') + '</span>' +
         '<div class="grow"><div class="t">' + esc(what) + '</div>' +
         '<div class="d">asked of ' + esc(rd ? rd.name : 'anyone who loves them') + (q.note ? ' · “' + esc(q.note) + '”' : '') + '</div></div></div>' +
-        (q.status === 'open'
-          ? '<div class="btn-row rowbtns">' +
-            '<button class="btn" data-em title="opens your mail app with the request written out">✉️ email</button>' +
-            '<button class="btn" data-sm title="opens your messages app with the request written out">💬 text</button>' +
-            '<button class="btn" data-share>⧉ share</button>' +
-            '<button class="btn warm" data-rec>record now</button>' +
-            '<button class="btn" data-done>mark read</button></div>'
-          : '<div class="btn-row rowbtns"><button class="btn danger" data-x>remove</button></div>') +
+        (q.status === 'open' ? '' : '<div class="btn-row rowbtns"><button class="btn danger" data-x>remove</button></div>') +
         '</div>');
       if (q.status === 'open') {
         const text = requestMessage(cornerName, bk ? bk.title : q.bookTitle, q.note);
-        // Hand mail/messages links to the OS the same way a tapped
-        // <a href="mailto:…"> would — the pattern phones handle best.
-        const launch = href => {
-          const a = document.createElement('a');
-          a.href = href;
-          a.rel = 'noopener';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        };
-        row.querySelector('[data-em]').onclick = () => {
-          launch('mailto:' + encodeURIComponent(rd && rd.email || '') +
-            '?subject=' + encodeURIComponent('A reading for ' + (cornerName || 'someone little')) +
-            '&body=' + encodeURIComponent(text));
-        };
-        row.querySelector('[data-sm]').onclick = () => {
-          const num = rd && rd.phone ? rd.phone.replace(/[^\d+]/g, '') : '';
-          // iOS wants "sms:num&body=", Android "sms:num?body=" — both open
-          // the messages app with the request typed and ready to send.
-          launch('sms:' + num + (IS_IOS ? '&' : '?') + 'body=' + encodeURIComponent(text));
-        };
-        row.querySelector('[data-share]').onclick = async () => {
-          if (navigator.share) { try { await navigator.share({ text }); } catch (e) { /* user closed the sheet */ } }
-          else { await navigator.clipboard.writeText(text); toast('Request copied — paste it into any message.'); }
-        };
-        row.querySelector('[data-rec]').onclick = () => startRecordFlow({ bookId: q.bookId, requestId: q.id, readerId: q.readerId });
-        row.querySelector('[data-done]').onclick = async () => { q.status = 'done'; await DB.requests.save(q); render(); };
+        const btns = sendRow(rd, 'A reading for ' + (cornerName || 'someone little'), text);
+        btns.appendChild(el('<button class="btn warm" data-rec>record now</button>'));
+        btns.appendChild(el('<button class="btn" data-done>mark read</button>'));
+        btns.querySelector('[data-rec]').onclick = () => startRecordFlow({ bookId: q.bookId, requestId: q.id, readerId: q.readerId });
+        btns.querySelector('[data-done]').onclick = async () => { q.status = 'done'; await DB.requests.save(q); render(); };
+        row.appendChild(btns);
+        // The half of the loop that lands back here: say plainly how the
+        // memo they send back becomes a reading.
+        const hint = el('<p class="hint" style="margin-top:8px">When their recording comes back, bring it in: <b>Record a reading → ⤓ Import audio</b>. <a href="#" data-guide>Step-by-step guide</a></p>');
+        hint.querySelector('[data-guide]').onclick = e => { e.preventDefault(); go('memoHelp', { returnTo: 'requests' }); };
+        row.appendChild(hint);
       } else {
         row.querySelector('[data-x]').onclick = async () => { await DB.requests.remove(q.id); render(); };
       }
@@ -1791,6 +1823,20 @@
     if (book) root.querySelector('#another').onclick = () => startRecordFlow({ bookId: book.id, readerId: reading.readerId });
     root.querySelector('#adjust').onclick = () => startEditFlow(reading);
     root.querySelector('#home').onclick = () => go('home');
+
+    // Close the loop: when the voice came from afar (an imported memo or a
+    // fulfilled request), the giver never sees the shelf — tell them it
+    // landed. The same send kit as requests, pre-addressed if we know them.
+    const fromAfar = reading.imported || !!(S.rec && S.rec.requestId);
+    if (reader && fromAfar) {
+      const thanks = '“' + what + '” is tucked onto ' + (cornerName ? cornerName + '’s' : 'the') + ' shelf now — ' +
+        (cornerName || 'the little one') + ' can hear your voice any night they like. Thank you for reading. 🌙';
+      const card = el(
+        '<div class="card" style="margin-top:14px"><div class="kicker">close the loop</div>' +
+        '<p class="hint" style="margin-top:8px">' + esc(reader.name) + ' read this from afar — let them know it made it to the shelf. It means a lot on the other end.</p></div>');
+      card.appendChild(sendRow(reader, 'It’s on ' + (cornerName ? cornerName + '’s' : 'the') + ' shelf 🌙', thanks));
+      root.appendChild(card);
+    }
   }
 
   // ---------- boot ----------
