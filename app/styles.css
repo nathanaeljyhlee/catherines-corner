@@ -17,12 +17,22 @@ input,select,textarea{font:inherit}
 .serif{font-family:'Newsreader',serif}
 
 #app{max-width:760px; margin:0 auto; min-height:100%; display:flex; flex-direction:column; padding:0 16px 90px}
+/* notched iPhones, added to the home screen: keep content out of the
+   status bar / home-indicator areas (viewport-fit=cover exposes them) */
+@supports (padding: env(safe-area-inset-top)){
+  #app{padding:env(safe-area-inset-top) calc(16px + env(safe-area-inset-right)) calc(90px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}
+}
 
 /* top bar */
-.topbar{display:flex; align-items:center; justify-content:space-between; padding:16px 2px 10px; gap:10px}
-.mark{font-family:'Newsreader',serif; font-size:20px; font-weight:600; letter-spacing:.2px}
+.topbar{display:flex; align-items:center; justify-content:space-between; padding:16px 2px 10px; gap:8px 10px; flex-wrap:wrap}
+.mark{font-family:'Newsreader',serif; font-size:20px; font-weight:600; letter-spacing:.2px; white-space:nowrap}
+.mode-pill{margin-left:auto; white-space:nowrap}
 .mark b{color:var(--accent)}
 .mode-pill{font-size:12px; color:var(--muted); border:1px solid var(--line); padding:5px 12px; border-radius:999px; background:#fff; display:flex; gap:6px; align-items:center}
+@media (max-width:520px){
+  .mark{font-size:18px}
+  .mode-pill{font-size:11px; padding:4px 10px}
+}
 .mode-pill button{border:none; background:none; color:var(--accent); font-weight:600; font-size:12px; padding:0}
 
 h1.screen-title{font-family:'Newsreader',serif; font-weight:600; font-size:28px; line-height:1.15; margin:14px 0 4px}
@@ -99,9 +109,14 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
   border:1px solid var(--line); padding:2px 9px; border-radius:999px}
 .p-bar{display:flex; align-items:center; gap:12px; padding:12px 16px; border-top:1px solid var(--line)}
 .p-play{width:46px; height:46px; border-radius:50%; background:var(--accent); border:none; color:#fff; font-size:17px; display:grid; place-items:center; flex:none}
-.p-track{flex:1; height:7px; border-radius:999px; background:#e7ddca; position:relative; cursor:pointer}
+.p-track{flex:1; height:7px; border-radius:999px; background:#e7ddca; position:relative; cursor:pointer; touch-action:none}
+.p-track::before{content:''; position:absolute; left:0; right:0; top:-13px; bottom:-13px} /* finger-sized hit area */
 .p-track i{position:absolute; left:0; top:0; height:100%; width:0%; border-radius:999px; background:var(--warm); pointer-events:none}
+.p-track i::after{content:''; position:absolute; right:-9px; top:50%; width:18px; height:18px; transform:translateY(-50%);
+  border-radius:50%; background:#fff; border:2.5px solid var(--warm); box-shadow:0 2px 6px -1px var(--shadow)}
 .p-time{font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums; flex:none}
+.p-nudge{width:36px; height:36px; border-radius:50%; border:1px solid var(--line); background:#fff; color:var(--soft);
+  font-size:11.5px; flex:none; padding:0; font-variant-numeric:tabular-nums}
 
 /* calm end */
 .calm{padding:46px 20px; text-align:center}
@@ -111,9 +126,11 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 
 /* record flow */
 .stepper{display:flex; gap:6px; font-size:11.5px; margin:14px 0 6px; flex-wrap:wrap}
-.stepper span{padding:5px 11px; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--muted)}
-.stepper span.now{background:var(--accent); border-color:var(--accent); color:#fff}
-.stepper span.done{background:#E7F0E8; border-color:#bcd3bc; color:#3f5f3f}
+.stepper span, .stepper button{padding:5px 11px; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--muted); font-size:inherit}
+.stepper .now{background:var(--accent); border-color:var(--accent); color:#fff}
+.stepper .done{background:#E7F0E8; border-color:#bcd3bc; color:#3f5f3f}
+.stepper button.done{cursor:pointer; text-decoration:underline; text-underline-offset:2px}
+.stepper button.done:hover{border-color:#3f5f3f}
 
 .rec-hero{background:#fff; border:1px solid var(--line); border-radius:20px; padding:34px 22px; text-align:center;
   box-shadow:0 20px 44px -32px var(--shadow)}
@@ -130,8 +147,10 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .pagestrip .pg.current{border-color:var(--warm)}
 .pagestrip .pg .k{position:absolute; top:4px; left:4px; background:rgba(255,255,255,.92); border:1px solid var(--line);
   border-radius:999px; font-size:10px; padding:1px 7px}
-.pagestrip .pg .stamp{position:absolute; bottom:4px; left:4px; right:4px; text-align:center; background:rgba(52,85,122,.92); color:#fff;
-  border-radius:999px; font-size:10px; padding:1px 4px; font-variant-numeric:tabular-nums}
+.pagestrip .pg img{cursor:pointer}
+.pagestrip .pg .stamp{position:absolute; bottom:4px; left:4px; right:4px; width:auto; height:auto; text-align:center;
+  background:rgba(52,85,122,.92); color:#fff; border:none; white-space:nowrap;
+  border-radius:999px; font-size:10px; padding:1px 4px; font-variant-numeric:tabular-nums; cursor:pointer}
 .pagestrip .addpg{flex:none; width:92px; aspect-ratio:3/4; border:2px dashed var(--line); border-radius:10px; background:none;
   color:var(--muted); font-size:12px; line-height:1.3}
 .skiplist{display:flex; flex-direction:column; gap:6px; margin-top:8px}
@@ -169,13 +188,20 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .home-card:hover{border-color:var(--accent-2)}
 
 /* lists in adult mode */
-.rowitem{display:flex; align-items:center; gap:12px; background:#fff; border:1px solid var(--line); border-radius:14px; padding:12px 14px}
+.rowitem{display:flex; align-items:center; gap:12px; background:#fff; border:1px solid var(--line); border-radius:14px; padding:12px 14px; flex-wrap:wrap}
 .rowitem .grow{flex:1; min-width:0}
 .rowitem .t{font-weight:600; font-size:14.5px; font-family:'Newsreader',serif}
-.rowitem .d{font-size:12px; color:var(--muted)}
+.rowitem .d{font-size:12px; color:var(--muted); overflow-wrap:anywhere}
 .rowitem img.thumb{width:44px; height:58px; object-fit:cover; border-radius:7px; border:1px solid var(--line)}
 .chip{font-size:11px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); background:var(--paper); color:var(--soft)}
 .chip.open{background:var(--highlight); border-color:#e7c79c; color:#7a5326}
+
+/* stacked rows (requests, readings): info on top, actions beneath —
+   phone-width cards can't fit a run of buttons beside the text */
+.rowitem.stacked{flex-direction:column; align-items:stretch}
+.rowhead{display:flex; align-items:center; gap:12px; min-width:0}
+.rowbtns{margin-top:10px}
+.rowbtns .btn{padding:8px 13px; font-size:13px}
 
 .back{border:none; background:none; color:var(--muted); font-size:13px; padding:0; margin:14px 0 0; text-decoration:underline; text-underline-offset:3px}
 
@@ -194,7 +220,7 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .brushsize i{border-radius:50%; background:var(--ink); display:block}
 .bgdot{width:28px; height:28px; border-radius:8px; border:1.5px solid var(--line); cursor:pointer; padding:0}
 
-.toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:var(--ink); color:#fff;
+.toast{position:fixed; left:50%; bottom:calc(26px + env(safe-area-inset-bottom, 0px)); transform:translateX(-50%); background:var(--ink); color:#fff;
   padding:10px 18px; border-radius:999px; font-size:13.5px; box-shadow:0 14px 30px -12px var(--shadow); z-index:60;
   opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; text-align:center}
 .toast.show{opacity:1}
