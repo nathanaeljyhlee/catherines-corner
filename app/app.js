@@ -6,7 +6,7 @@
   'use strict';
 
   const $app = document.getElementById('app');
-  const APP_VERSION = '1.5.1';
+  const APP_VERSION = '1.5.2';
   // iOS Safari mishandles accept="audio/*" on file inputs (greys out audio in
   // Files, offers only video/camera). There: no accept filter, validate in JS.
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -911,14 +911,16 @@
       const rd = readers.find(x => x.id === r.readerId);
       const label = (r.episodeIndex != null ? 'Chapter ' + r.episodeIndex + (r.title ? ' · ' + r.title : '') : 'The whole book');
       const row = el(
-        '<div class="rowitem">' + avatar(rd) +
+        '<div class="rowitem stacked">' +
+        '<div class="rowhead">' + avatar(rd) +
         '<div class="grow"><div class="t">' + esc(label) + '</div>' +
         '<div class="d">' + esc(rd ? rd.name : '') + ' · ' + fmt(r.duration || 0) +
-        ((r.skipRanges || []).length ? ' · ' + r.skipRanges.length + ' gentle skip' + (r.skipRanges.length > 1 ? 's' : '') : '') + '</div></div>' +
+        ((r.skipRanges || []).length ? ' · ' + r.skipRanges.length + ' gentle skip' + (r.skipRanges.length > 1 ? 's' : '') : '') + '</div></div></div>' +
+        '<div class="btn-row rowbtns">' +
         '<button class="btn" data-ed title="adjust the pages, turns and skips">✎ edit</button>' +
         '<button class="btn" data-dl>⤓ keep a copy</button>' +
         '<button class="btn" data-vx>🎞 video</button>' +
-        '<button class="btn danger" data-x>delete</button></div>');
+        '<button class="btn danger" data-x>delete</button></div></div>');
       row.querySelector('[data-ed]').onclick = () => startEditFlow(r);
       row.querySelector('[data-dl]').onclick = () => {
         const a = document.createElement('a');
@@ -991,18 +993,18 @@
       const bk = books.find(b => b.id === q.bookId);
       const what = bk ? bk.title : (q.bookTitle || 'Anything they love — reader’s pick');
       const row = el(
-        '<div class="rowitem reqitem">' +
-        '<div class="reqhead"><span class="chip ' + (q.status === 'open' ? 'open' : '') + '">' + (q.status === 'open' ? 'open' : 'read ✓') + '</span>' +
+        '<div class="rowitem stacked">' +
+        '<div class="rowhead"><span class="chip ' + (q.status === 'open' ? 'open' : '') + '">' + (q.status === 'open' ? 'open' : 'read ✓') + '</span>' +
         '<div class="grow"><div class="t">' + esc(what) + '</div>' +
         '<div class="d">asked of ' + esc(rd ? rd.name : 'anyone who loves them') + (q.note ? ' · “' + esc(q.note) + '”' : '') + '</div></div></div>' +
         (q.status === 'open'
-          ? '<div class="btn-row reqbtns">' +
+          ? '<div class="btn-row rowbtns">' +
             '<button class="btn" data-em title="opens your mail app with the request written out">✉️ email</button>' +
             '<button class="btn" data-sm title="opens your messages app with the request written out">💬 text</button>' +
             '<button class="btn" data-share>⧉ share</button>' +
             '<button class="btn warm" data-rec>record now</button>' +
             '<button class="btn" data-done>mark read</button></div>'
-          : '<div class="btn-row reqbtns"><button class="btn danger" data-x>remove</button></div>') +
+          : '<div class="btn-row rowbtns"><button class="btn danger" data-x>remove</button></div>') +
         '</div>');
       if (q.status === 'open') {
         const text = requestMessage(cornerName, bk ? bk.title : q.bookTitle, q.note);
