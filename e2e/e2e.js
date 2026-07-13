@@ -128,7 +128,8 @@ async function enterPin(page, digits) {
   const ctxA = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['microphone'], acceptDownloads: true });
   const page = await ctxA.newPage();
   page.on('pageerror', e => errors.push('A: ' + e.message));
-  page.on('dialog', d => d.accept(d.type() === 'prompt' ? '' : undefined));
+  let promptAnswer = '';   // what window.prompt returns on page A this moment
+  page.on('dialog', d => d.accept(d.type() === 'prompt' ? promptAnswer : undefined));
 
   step('boot fresh → alpha notice → acknowledge');
   await page.goto(`http://localhost:${PORT}/app/`);
@@ -402,6 +403,78 @@ async function enterPin(page, digits) {
   assert(await page.$('#ttoggle'), 'off/on switch rendered');
   await page.evaluate(() => { Telemetry.configure(''); return Telemetry.setOff(false); }); // back to dormant for the rest
   await page.click('.back'); // usage → home
+
+  step('PARCELS: family A packs a book addressed to family B\'s Corner ID');
+  const ctxE = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
+  const pageE = await ctxE.newPage();
+  pageE.on('pageerror', e => errors.push('E: ' + e.message));
+  pageE.on('dialog', d => d.accept(''));
+  await pageE.goto(`http://localhost:${PORT}/app/`);
+  await pageE.click('#ack');
+  await pageE.click('#gate');
+  await enterPin(pageE, '5678'); await enterPin(pageE, '5678');
+  await pageE.fill('#nm', 'Ben');
+  await pageE.click('#save');
+  const benId = await pageE.evaluate(() => DB.familyId());
+  assert(/^CC-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(benId), 'Corner ID has the shareable shape (got ' + benId + ')');
+  // family A packs Goodnight Moon for Ben
+  await page.click('.home-card:has-text("The library")');
+  await page.click('.rowitem:has-text("Goodnight Moon")');
+  promptAnswer = benId.toLowerCase();   // sloppy typing is normalized on pack
+  const [parcelDl] = await Promise.all([
+    page.waitForEvent('download'),
+    page.click('#parcel'),
+  ]);
+  promptAnswer = '';
+  const parcelPath = path.join(TMP, 'parcel.zip');
+  await parcelDl.saveAs(parcelPath);
+  assert(fs.statSync(parcelPath).size > 1000, 'parcel has real content');
+  await page.click('.back'); await page.click('.back'); // book → library → home
+
+  step('PARCELS: family B accepts — book, voices and pages land on Ben\'s shelf, marked new');
+  await pageE.click('.home-card:has-text("Keep it safe")');
+  await pageE.setInputFiles('#restorefile', parcelPath);
+  await pageE.waitForSelector('h1:has-text("Goodnight Moon")');
+  assert((await pageE.textContent('body')).includes('✓ addressed to this corner'), 'address matches — no warning');
+  await pageE.click('#accept');
+  await pageE.waitForSelector('h1:has-text("The library")');
+  assert(await pageE.$('.rowitem:has-text("Goodnight Moon")'), 'book in Ben\'s library');
+  const benState = await pageE.evaluate(async () => {
+    const readers = await DB.readers.all();
+    const corner = await DB.corners.active();
+    const readings = await DB.readings.all(corner.id);
+    return { dads: readers.filter(r => r.name === 'Dad').length, readings: readings.length, allNew: readings.every(r => r.isNew) };
+  });
+  assert(benState.dads === 1, 'reader Dad traveled with the parcel, once');
+  assert(benState.readings >= 1 && benState.allNew, 'accepted readings arrive marked new');
+  await pageE.click('#to-kid');
+  await pageE.waitForSelector('.tile:has-text("Goodnight Moon") .badge-new');
+  await pageE.click('.tile:has-text("Goodnight Moon")');
+  await pageE.waitForSelector('.p-stage.spread');
+  await pageE.click('#pp');
+  await pageE.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+
+  step('PARCELS: re-accepting is a no-op; a mis-addressed parcel warns before it tucks in');
+  await pageE.click('.back');
+  await pageE.click('#gate'); await enterPin(pageE, '5678');
+  await pageE.click('.home-card:has-text("Keep it safe")');
+  await pageE.setInputFiles('#restorefile', parcelPath);
+  await pageE.waitForSelector('#accept');
+  await pageE.click('#accept');
+  await pageE.waitForSelector('.toast.show:has-text("already on the shelf")');
+  const benCount2 = await pageE.evaluate(async () => (await DB.readings.all((await DB.corners.active()).id)).length);
+  assert(benCount2 === benState.readings, 're-accept adds nothing');
+  await ctxE.close();
+  // family A opens the SAME parcel (addressed to Ben, not to A) → warning
+  await page.click('.home-card:has-text("Keep it safe")');
+  await page.setInputFiles('#restorefile', parcelPath);
+  await page.waitForSelector('#accept');
+  assert((await page.textContent('body')).includes('addressed to a different corner') ||
+         (await page.textContent('body')).includes('was addressed to'), 'mis-addressed parcel warns plainly');
+  await page.click('#nope'); // decline
+  await page.waitForSelector('h1:has-text("Keep it safe")');
+  assert((await page.textContent('body')).includes('your corner id'.toLowerCase()) || await page.$('#fid'), 'Corner ID surfaced under Keep it safe');
+  await page.click('.back'); // safety → home
 
   step('HARDEN: a corrupted backup zip is refused whole — nothing written');
   const corrupted = fs.readFileSync(zipPath);

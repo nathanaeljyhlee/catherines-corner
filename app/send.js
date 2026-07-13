@@ -101,6 +101,22 @@
     prompt('Copy this message:', text);
   }
 
+  // Share any file through the sheet, falling back to a plain download —
+  // used for parcels (and anything else that must reach another person).
+  async function shareFile(blob, fname, text) {
+    const file = new File([blob], fname, { type: blob.type || 'application/zip' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], text }); return; }
+      catch (e) { if (e && e.name === 'AbortError') return; /* sheet failed — fall back */ }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    toast('Saved “' + fname + '” — send the file over any way you like.');
+  }
+
   // =========================================================
   // GUEST PAGE — what an invite link opens, on the invitee's own phone.
   // No PIN, no setup, nothing saved here: record → send it back.
@@ -178,5 +194,5 @@
 
   App.register('guest', guestScreen, { guest: true });
 
-  window.Send = { appURL, siteURL, inviteLink, decodeInvite, inviteFromHash, requestMessage, sendRow, shareText };
+  window.Send = { appURL, siteURL, inviteLink, decodeInvite, inviteFromHash, requestMessage, sendRow, shareText, shareFile };
 })();

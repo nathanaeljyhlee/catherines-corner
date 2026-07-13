@@ -21,7 +21,7 @@ No bundler — modules are plain scripts wired in `app/index.html`:
 - `send.js` — everything "far away": request messages, ✉️/💬/⧉ send row, **invite links** (`#invite=` payload, no server), and the guest recording page they open.
 - `app.js` — the shell: state, screen registry + router, player handle, share-target inbox, boot.
 - `screens-kid.js` / `screens-adult.js` / `screens-record.js` — the screens; each registers itself with the shell.
-- `backup.js` — plain-zip backup/restore, format v2 (still restores v1 zips; corners merge by name).
+- `backup.js` — plain-zip backup/restore, format v2 (still restores v1 zips; corners merge by name) — plus **parcels**: one book or told story, voices and pages included, packed by one family and **addressed to another family's Corner ID** (shown under "Keep it safe"). The receiving app inspects the parcel, shows what's inside and who it was addressed to, then tucks it onto the active shelf — readers merge by name, ids are collision-safe, re-accepting is a no-op, and everything arrives marked new for the child.
 - `export.js` — video export (16:9 for two-page-spread books, 4:3 for single pages).
 - `sw.js` — offline app shell + voice-memo share target. Bump its `VERSION` together with `APP_VERSION` in `app.js` on every deploy, and keep its `SHELL` list current.
 

@@ -25,6 +25,10 @@ owner journey plus the seams that history shows break quietly:
 - **telemetry**: proven dormant while unconfigured (zero requests across the
   whole suite), delivers events to a fake collector once configured, and the
   family off switch stops sending while local counting continues
+- **parcels**: a full two-family exchange — family A packs a book addressed
+  to family B's Corner ID, B accepts (reader merged once, readings marked
+  new, spread playback works), re-accepting adds nothing, and a mis-addressed
+  parcel warns plainly before anything is tucked in
 
 Run it:
 

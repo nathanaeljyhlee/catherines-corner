@@ -204,6 +204,18 @@ const DBAPI = {
     get: async key => { const row = await getOne('settings', key); return row ? row.value : null; },
     set: (key, value) => put('settings', { key, value }),
   },
+  // This install's shareable identity — the "account id" until real accounts
+  // exist (ADR-001). Family give it to each other so parcels can be addressed;
+  // it names the install, never a person, and travels nowhere on its own.
+  async familyId() {
+    let id = await DBAPI.settings.get('familyId');
+    if (!id) {
+      const chunk = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+      id = 'CC-' + chunk() + '-' + chunk();
+      await DBAPI.settings.set('familyId', id);
+    }
+    return id;
+  },
   // Usage counters, so pain points show up as numbers instead of guesses.
   // Counts only — event names like 'record.audio_imported', never recordings,
   // names, or titles. Everything stays on this device; a grown-up can share a

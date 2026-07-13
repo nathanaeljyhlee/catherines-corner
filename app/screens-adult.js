@@ -366,15 +366,17 @@
     };
 
     const rcard = el(
-      '<div class="card" style="margin-top:14px"><div class="kicker">restore</div>' +
-      '<p class="hint" style="margin-top:8px">Bring a backup file from this or another device. Restoring adds to what’s here — it never deletes anything.</p>' +
-      '<div class="btn-row"><span class="btn filebtn">⤒ Restore a backup<input type="file" id="restorefile" accept=".zip,application/zip"></span></div></div>');
+      '<div class="card" style="margin-top:14px"><div class="kicker">restore · accept a parcel</div>' +
+      '<p class="hint" style="margin-top:8px">Bring in a backup from this or another device, or a 📦 parcel another family sent you. Nothing here ever deletes anything.</p>' +
+      '<div class="btn-row"><span class="btn filebtn">⤒ Bring in a backup or parcel<input type="file" id="restorefile" accept=".zip,application/zip"></span></div></div>');
     root.appendChild(rcard);
     rcard.querySelector('#restorefile').onchange = async e => {
       const f = e.target.files[0];
       if (!f) return;
       try {
-        const counts = await Backup.importFile(f);
+        const { manifest: m, map } = await Backup.inspect(f);
+        if (m.format === 'catherines-corner-parcel') return go('acceptParcel', { parcel: { m, map } });
+        const counts = await Backup.importBackup(m, map);
         DB.metrics.bump('safety.restore_done');
         clearURLCache();
         toast('Restored ' + counts.readings + ' reading' + (counts.readings === 1 ? '' : 's') + ', ' +
@@ -384,6 +386,20 @@
         DB.metrics.bump('error.restore_failed');
         toast(err.message || 'That file couldn’t be restored.');
       }
+    };
+
+    // This install's shareable address — parcels from other families are
+    // addressed to it, so they land on the right shelf with no server at all.
+    const myId = await DB.familyId();
+    const idcard = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">your corner id</div>' +
+      '<p style="margin-top:8px; font-variant-numeric:tabular-nums"><b style="font-size:18px; letter-spacing:.06em" id="fid">' + esc(myId) + '</b>' +
+      ' <button class="btn" id="copyid" style="padding:5px 11px; font-size:12px; margin-left:8px">⧉ copy</button></p>' +
+      '<p class="hint" style="margin-top:6px">Give it to family who keep their own Corner: when they 📦 send a book from their library, they address it to this id and it lands on your shelf.</p></div>');
+    root.appendChild(idcard);
+    idcard.querySelector('#copyid').onclick = async () => {
+      try { await navigator.clipboard.writeText(myId); toast('Copied — send it to whoever wants to share with you.'); }
+      catch (e) { prompt('Copy your Corner ID:', myId); }
     };
 
     root.appendChild(el(
@@ -482,8 +498,10 @@
           '<div class="rowitem"><span class="chip">🌙 told story</span>' +
           '<div class="grow"><div class="t">' + esc(st.title || 'A bedtime story') + '</div>' +
           '<div class="d">told by ' + esc(rd ? rd.name : '') + ' · ' + fmt(st.duration || 0) + '</div></div>' +
-          '<button class="btn" data-ed title="adjust the gentle skips">✎ edit</button></div>');
+          '<button class="btn" data-ed title="adjust the gentle skips">✎ edit</button>' +
+          '<button class="btn" data-pk title="pack this story for another family’s Corner">📦 send</button></div>');
         row.querySelector('[data-ed]').onclick = () => App.startEditFlow(st);
+        row.querySelector('[data-pk]').onclick = e => sendParcel({ readingId: st.id }, st.title || 'A bedtime story', e.currentTarget);
         stack.appendChild(row);
       }
     }
@@ -618,11 +636,14 @@
       '<button class="btn primary" id="rec">🎙️ Record this book</button>' +
       '<button class="btn" id="ask">📬 Ask someone to read it</button>' +
       '<button class="btn" id="art">🖍️ Design a colorful cover</button>' +
+      (readings.length ? '<button class="btn" id="parcel" title="pack this book — pages, voices and all — for another family’s Corner">📦 Send to another Corner</button>' : '') +
       '</div>');
     root.appendChild(row);
     row.querySelector('#rec').onclick = () => App.startRecordFlow({ bookId: book.id });
     row.querySelector('#ask').onclick = () => go('requests', { prefillBookId: book.id });
     row.querySelector('#art').onclick = () => go('studio', { bookId: book.id });
+    const parcelBtn = row.querySelector('#parcel');
+    if (parcelBtn) parcelBtn.onclick = () => sendParcel({ bookId: book.id }, book.title, parcelBtn);
     const back = el('<button class="back">‹ the library</button>');
     back.onclick = () => go('books');
     root.appendChild(back);
@@ -633,9 +654,9 @@
   // Counts only, kept on this device; they leave only when a grown-up
   // taps share — that snapshot is how alpha pain points reach the maker.
   // =========================================================
-  const AREA_ORDER = ['record', 'invite', 'guest', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
+  const AREA_ORDER = ['record', 'invite', 'guest', 'share', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
   const AREA_LABELS = {
-    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', play: '📖 listening',
+    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', share: '📦 parcels', play: '📖 listening',
     library: '📚 the library', corners: '👧 corners', safety: '🗄 keep it safe', help: '❓ help',
     gate: '🔢 the grown-up code', error: '⚠️ rough edges',
   };
@@ -720,6 +741,83 @@
     const back = el('<button class="back">‹ grown-up home</button>');
     back.onclick = () => go('home');
     root.appendChild(back);
+  });
+
+  // =========================================================
+  // PARCELS — a book or story travels from one family's Corner to another's.
+  // No server: the parcel is a zip addressed to the other family's Corner ID;
+  // it goes over any channel they already use, and their app accepts it.
+  // =========================================================
+  async function sendParcel(what, title, btn) {
+    const toId = prompt(
+      'Their Corner ID? (optional — they can find it under Keep it safe.\n' +
+      'Addressed parcels land on the right shelf without a second thought; leave blank to send it open.)', '');
+    if (toId === null) return;   // changed their mind
+    if (btn) { btn.disabled = true; btn.textContent = '📦 packing…'; }
+    try {
+      const { blob, manifest } = await Backup.exportParcel(Object.assign({}, what, { toId }));
+      const fname = ('parcel - ' + title + (manifest.to ? ' - for ' + manifest.to : '') + '.zip').replace(/[/\\?%*:|"<>]/g, '-');
+      DB.metrics.bump('share.parcel_sent');
+      await Send.shareFile(blob, fname,
+        'A parcel from Catherine’s Corner 🌙 — “' + title + '”, voices and all. ' +
+        'To tuck it onto the shelf: open Catherine’s Corner → for grown-ups → Keep it safe → Bring in a backup or parcel.');
+    } catch (err) {
+      toast(err.message || 'The parcel couldn’t be packed.');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '📦 Send to another Corner'; }
+  }
+
+  register('acceptParcel', async function acceptParcel(root, ctx) {
+    const parcel = S.params.parcel;
+    if (!parcel) return go('safety');
+    const { m, map } = parcel;
+    const myId = await DB.familyId();
+    const addressed = m.to || null;
+    const mine = addressed && addressed === myId;
+    const what = m.book ? m.book.title : ((m.readings && m.readings[0] && m.readings[0].title) || 'A bedtime story');
+    const readerNames = (m.readers || []).map(r => r.name).filter(Boolean);
+
+    root.appendChild(el(
+      '<div class="kicker">a parcel arrived</div>' +
+      '<h1 class="screen-title">“' + esc(what) + '”</h1>' +
+      '<p class="screen-sub">Sent from ' + esc(m.from && m.from.corner ? m.from.corner + '’s corner' : 'another corner') +
+      (m.from && m.from.id ? ' (' + esc(m.from.id) + ')' : '') + ' — ' +
+      (m.readings || []).length + ' reading' + ((m.readings || []).length === 1 ? '' : 's') +
+      (readerNames.length ? ', read by ' + esc(readerNames.join(', ')) : '') +
+      (m.book && (m.book.pages || []).length ? ' · ' + m.book.pages.length + ' page photos' : '') + '.</p>'));
+
+    if (addressed && !mine) {
+      root.appendChild(el(
+        '<div class="card" style="border-color:var(--warm); background:var(--highlight); margin-bottom:14px">' +
+        '<p class="hint">⚠️ This parcel was addressed to <b>' + esc(addressed) + '</b> — this device is <b>' + esc(myId) + '</b>. ' +
+        'It may have been meant for someone else’s shelf. You can still tuck it in if it’s yours.</p></div>'));
+    } else if (mine) {
+      root.appendChild(el('<p class="hint" style="margin:-8px 0 14px">✓ addressed to this corner (' + esc(myId) + ')</p>'));
+    }
+
+    const row = el(
+      '<div class="btn-row">' +
+      '<button class="btn primary big" id="accept">Tuck it onto ' + esc(ctx.cornerName ? ctx.cornerName + '’s' : 'the') + ' shelf</button>' +
+      '<button class="btn ghost" id="nope">not now</button></div>');
+    root.appendChild(row);
+    row.querySelector('#accept').onclick = async e => {
+      e.currentTarget.disabled = true;
+      try {
+        const counts = await Backup.importParcel(m, map, ctx.corner && ctx.corner.id);
+        DB.metrics.bump('share.parcel_accepted');
+        clearURLCache();
+        toast(counts.readings
+          ? '“' + what + '” is on the shelf — ' + (ctx.cornerName || 'the little one') + ' will see something new. 🌙'
+          : 'Everything in this parcel was already on the shelf.');
+        go('books');
+      } catch (err) {
+        DB.metrics.bump('error.parcel_refused');
+        toast(err.message || 'The parcel couldn’t be brought in.');
+        e.currentTarget.disabled = false;
+      }
+    };
+    row.querySelector('#nope').onclick = () => go('safety');
+    root.appendChild(el('<p class="hint" style="margin-top:12px">Accepting adds to the shelf — it never replaces or deletes anything already here.</p>'));
   });
 
   // =========================================================
