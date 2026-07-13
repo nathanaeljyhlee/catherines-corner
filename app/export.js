@@ -60,17 +60,6 @@
     const chunks = [];
     rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
 
-    function pageIndex(tSec) {
-      let i = 0;
-      for (const tt of reading.pageTurns || []) { if (tSec * 1000 >= tt) i++; else break; }
-      return i;
-    }
-    function applySkips() {
-      const t = audioEl.currentTime * 1000;
-      for (const r of reading.skipRanges || []) {
-        if (t >= r.start && t < r.end - 40) { audioEl.currentTime = r.end / 1000; return; }
-      }
-    }
     function drawContain(img, x, y, w, h) {
       const s = Math.min(w / img.width, h / img.height);
       const dw = img.width * s, dh = img.height * s;
@@ -80,7 +69,7 @@
       ctx.fillStyle = '#FAF4EA';
       ctx.fillRect(0, 0, W, H);
       const FOOT = 96;
-      const current = loaded.length ? loaded[Math.min(pageIndex(tSec), loaded.length - 1)] : cover;
+      const current = loaded.length ? loaded[Math.min(UI.currentPageIndex(reading, tSec), loaded.length - 1)] : cover;
       if (current) {
         drawContain(current.img, 40, 34, W - 80, H - FOOT - 62);
       } else {
@@ -116,7 +105,7 @@
       rec.onstop = () => res();
       rec.onerror = e => rej(e.error || new Error('recording failed'));
       const loop = () => {
-        applySkips();
+        UI.applySkips(reading, audioEl);
         draw(audioEl.currentTime);
         if (onProgress && audioEl.duration) onProgress(Math.min(1, audioEl.currentTime / audioEl.duration));
         raf = requestAnimationFrame(loop);

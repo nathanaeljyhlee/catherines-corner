@@ -96,15 +96,17 @@
   ];
 
   // ---------- badge state ----------
-  // The badge shows when the running version is newer than the last version
-  // this device opened the walkthrough on (or acknowledged at install).
+  // The badge is keyed to the newest RELEASE with slides, not to APP_VERSION —
+  // a refactor-only patch never nags anyone, and every slide-worthy release
+  // badges exactly once.
+  const LATEST = RELEASES[0].v;
   async function hasUnseen() {
     const [seen, ack] = await Promise.all([DB.settings.get('seenVersion'), DB.settings.get('alphaAck')]);
     if (!ack) return false;   // first run — the whole app is new, no badge needed
     if (!seen) return true;   // updated from before the badge existed
-    return seen !== App.VERSION;
+    return seen !== LATEST;
   }
-  function markSeen() { return DB.settings.set('seenVersion', App.VERSION); }
+  function markSeen() { return DB.settings.set('seenVersion', LATEST); }
 
   register('whatsnew', async function whatsNew(root) {
     await markSeen();
@@ -134,9 +136,8 @@
       counter.textContent = Math.min(i + 1, slides.length) + ' / ' + slides.length;
     }, { passive: true });
 
-    const back = el('<button class="back">‹ back' + (S.mode === 'adult' ? ' to grown-up home' : ' to the shelf') + '</button>');
-    back.onclick = () => go(S.mode === 'adult' ? 'home' : 'shelf');
-    root.appendChild(back);
+    root.appendChild(UI.backLink('‹ back' + (S.mode === 'adult' ? ' to grown-up home' : ' to the shelf'),
+      () => go(S.mode === 'adult' ? 'home' : 'shelf')));
   });
 
   window.WhatsNew = { hasUnseen, markSeen };

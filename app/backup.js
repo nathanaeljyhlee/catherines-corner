@@ -206,6 +206,23 @@
     return active ? active.id : null;
   }
 
+  // Merge incoming rows into existing ones: an id match is the same row, a
+  // name match is the same PERSON/CHILD from another device (remapped), and
+  // anything else is new. Returns oldId → effectiveId. Used for corners on
+  // restore and readers on parcel-accept — the two places two families'
+  // worlds meet.
+  async function mergeByIdThenName(existing, incoming, save) {
+    const map = new Map();
+    for (const r of incoming || []) {
+      if (existing.some(x => x.id === r.id)) { map.set(r.id, r.id); continue; }
+      const byName = existing.find(x => (x.name || '').trim().toLowerCase() === (r.name || '').trim().toLowerCase());
+      if (byName) { map.set(r.id, byName.id); continue; }
+      await save(r);
+      map.set(r.id, r.id);
+    }
+    return map;
+  }
+
   // Every file the manifest points at must actually be in the zip — checked
   // BEFORE the first write, so a truncated backup can't restore readings with
   // their voices missing.
@@ -252,15 +269,8 @@
     // Corners merge by id, then by name: restoring onto a device where the
     // same child's corner was just set up must land on THAT shelf, not spawn
     // a twin. Remapped ids are applied to every scoped row below.
-    const cornerIdMap = new Map();
-    const existingCorners = await DB.corners.all();
-    for (const c of m.corners || []) {
-      counts.corners++;
-      if (existingCorners.some(x => x.id === c.id)) continue;
-      const byName = existingCorners.find(x => x.name === c.name);
-      if (byName) { cornerIdMap.set(c.id, byName.id); continue; }
-      await DB.corners.save(c);
-    }
+    counts.corners = (m.corners || []).length;
+    const cornerIdMap = await mergeByIdThenName(await DB.corners.all(), m.corners, c => DB.corners.save(c));
     const mapCorner = id => id == null ? fallbackCornerId : (cornerIdMap.get(id) || id);
     for (const r of m.readers || []) { await DB.readers.save(r); counts.readers++; }
     for (const b of m.books || []) {
@@ -357,15 +367,7 @@
   // arrives isNew — the child's shelf lights up the way a gift should.
   async function importParcel(m, map, targetCornerId) {
     if (!targetCornerId) throw new Error('Make a corner first, then bring the parcel in.');
-    const existingReaders = await DB.readers.all();
-    const readerIdMap = new Map();
-    for (const r of m.readers || []) {
-      if (existingReaders.some(x => x.id === r.id)) { readerIdMap.set(r.id, r.id); continue; }
-      const byName = existingReaders.find(x => (x.name || '').trim().toLowerCase() === (r.name || '').trim().toLowerCase());
-      if (byName) { readerIdMap.set(r.id, byName.id); continue; }
-      await DB.readers.save(r);
-      readerIdMap.set(r.id, r.id);
-    }
+    const readerIdMap = await mergeByIdThenName(await DB.readers.all(), m.readers, r => DB.readers.save(r));
     const bookIdMap = new Map();
     if (m.book) {
       const b = m.book;
