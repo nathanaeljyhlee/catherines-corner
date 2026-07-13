@@ -15,8 +15,14 @@ const CHROMIUM = fs.existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/
 // ---------- tiny static server (with a synthetic /blank.html for DB seeding) ----------
 const MIME = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', png: 'image/png', zip: 'application/zip' };
 const countHits = [];   // the fake telemetry collector's inbox
+let swTag = null;       // when set, sw.js is served with this VERSION — simulates a new release
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0].split('#')[0];
+  if (swTag && url === '/app/sw.js') {
+    const src = fs.readFileSync(path.join(ROOT, 'app/sw.js'), 'utf8').replace(/const VERSION = '[^']+';/, "const VERSION = '" + swTag + "';");
+    res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-cache' });
+    return res.end(src);
+  }
   if (url === '/count') {
     countHits.push(new URL(req.url, 'http://x').searchParams.get('p'));
     res.writeHead(200, { 'content-type': 'image/gif' });
@@ -356,6 +362,7 @@ async function enterPin(page, digits) {
   await page.click('#save');
   await page.waitForSelector('.toast.show:has-text("storage is full")');
   assert(await page.$('h1:has-text("Pass 2")'), 'still on pass 2 — the draft is not thrown away');
+  assert(!(await page.evaluate(() => App.updateSafe())), 'auto-update holds back while a draft is unsaved');
   const countMid = await page.evaluate(async () => (await DB.readings.all()).length);
   assert(countMid === countBefore, 'no orphan reading row after the failed save');
   await page.evaluate(() => { DB.readings.saveWithAudio = DB.readings._origSWA; });
@@ -760,6 +767,28 @@ async function enterPin(page, digits) {
   await pageD.click('#pp');
   await pageD.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
   await ctxD.close();
+
+  // ============ PART E: the app updates itself when a new version ships ============
+  const ctxH = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const pageH = await ctxH.newPage();
+  pageH.on('pageerror', e => errors.push('H: ' + e.message));
+
+  step('SELF-UPDATE: a controlled page notices a new release and reloads itself when idle');
+  await pageH.goto(`http://localhost:${PORT}/app/`);
+  await pageH.click('#ack');
+  await sleep(1000);             // let the first SW install + claim settle
+  await pageH.reload();          // now the page starts CONTROLLED — the normal state for an existing user
+  await pageH.waitForSelector('.empty');
+  assert(await pageH.evaluate(() => !!navigator.serviceWorker.controller), 'page is service-worker controlled');
+  assert(await pageH.evaluate(() => App.updateSafe()), 'idle shelf is safe to refresh');
+  swTag = 'cc-e2e-update';       // ship a "new release"
+  await pageH.evaluate(() => { window.__preUpdate = true; navigator.serviceWorker.ready.then(r => r.update()); });
+  await pageH.waitForFunction(() => window.__preUpdate === undefined, null, { timeout: 20000 });   // it reloaded itself
+  await pageH.waitForSelector('.empty');
+  assert(await pageH.evaluate(async () => !!(await DB.settings.get('alphaAck'))), 'IndexedDB untouched by the self-update');
+  swTag = null;
+  await ctxH.close();
+
   await browser.close();
   server.close();
 

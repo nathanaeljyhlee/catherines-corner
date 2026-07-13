@@ -22,6 +22,12 @@
           text: 'The family iPad and your phone can now match shelves directly: Keep it safe → Sync with a nearby device. A little pairing code goes between them (send it any way you like), then the recordings themselves travel over your own WiFi — nothing touches the internet.',
         },
         {
+          art: '🔄',
+          sub: 'nothing interrupted, nothing lost',
+          title: 'Updates now arrive on their own',
+          text: 'The app quietly picks up new versions when you open it and refreshes itself — never during a recording, playback, or a sync. Your recordings live safely on the device either way; an update never touches them.',
+        },
+        {
           art: '✨',
           sub: 'you are here',
           title: 'This screen',

@@ -25,7 +25,7 @@ No bundler — modules are plain scripts wired in `app/index.html`:
 - `whatsnew.js` — the ✨ **what's-new badge** + release-notes carousel. Per-release checklist: add a slide to `RELEASES`, bump versions, deploy — updated devices get the badge automatically; fresh installs never do.
 - `sync.js` — **nearby sync**: two of the family's devices on the same WiFi match shelves directly over a LAN-only WebRTC data channel (host candidates, no STUN, no server, no library). The handshake rides in two small hand-carried pairing codes; the payload is a CRC-verified backup **delta**, so merging reuses the restore semantics that have been tested since v1.1.1. Nothing is ever deleted by a sync.
 - `export.js` — video export (16:9 for two-page-spread books, 4:3 for single pages).
-- `sw.js` — offline app shell + voice-memo share target. Bump its `VERSION` together with `APP_VERSION` in `app.js` on every deploy, and keep its `SHELL` list current.
+- `sw.js` — offline app shell + voice-memo share target. Bump its `VERSION` together with `APP_VERSION` in `app.js` on every deploy, and keep its `SHELL` list current. **Updates apply themselves**: the app checks for a new version whenever it comes to the foreground (and hourly), and reloads when the new worker takes over — never during a live recording, an unsaved draft, playback, a sync, or a guest visit (then it applies on next open). IndexedDB is untouched by updates.
 
 ## Working on it
 

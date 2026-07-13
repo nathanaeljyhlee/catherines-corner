@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.10.0';
+  const APP_VERSION = '1.10.1';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -167,8 +167,40 @@
     };
   });
 
+  // ---------- self-updating ----------
+  // New versions install eagerly (the service worker skipWaitings and claims);
+  // this side notices the takeover and reloads to show it — but only when
+  // nothing precious is mid-flight. A live recording, an unsaved draft,
+  // playback, a sync, or a guest visit is never interrupted: the update then
+  // simply applies on the next open. Recordings live in IndexedDB, which an
+  // update never touches.
+  function updateSafe() {
+    const recordingLive = !!document.querySelector('.rec-dot.live');
+    const unsavedDraft = !!(S.rec && S.rec.audioBlob);
+    const playing = !!(player.audio && !player.audio.paused);
+    return !recordingLive && !unsavedDraft && !playing && S.screen !== 'guest' && S.screen !== 'sync';
+  }
+  function initUpdates() {
+    if (!('serviceWorker' in navigator)) return;
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;   // first claim on a fresh install is not an update
+      reloaded = true;
+      if (updateSafe()) location.reload();
+      else toast('A little update is ready — it’ll apply next time you open the app.');
+    });
+    // Look for updates whenever the app comes back to the foreground (how a
+    // home-screen app usually "restarts"), and hourly while it stays open.
+    const check = () => navigator.serviceWorker.ready.then(r => r.update()).catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    setInterval(check, 60 * 60 * 1000);
+  }
+
   // ---------- boot ----------
   document.addEventListener('DOMContentLoaded', () => {
+    initUpdates();
     // An invite link opens the guest page directly — no PIN, no shelf, no setup.
     const invite = Send.inviteFromHash();
     if (invite) {
@@ -184,5 +216,5 @@
     DB.readings.all().then(rs => { if (rs.length) DB.requestPersistence(); }).catch(() => {});
   });
 
-  window.App = { VERSION: APP_VERSION, S, go, render, register, player, consumeShared };
+  window.App = { VERSION: APP_VERSION, S, go, render, register, player, consumeShared, updateSafe };
 })();
