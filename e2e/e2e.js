@@ -174,12 +174,19 @@ async function enterPin(page, digits) {
   await page.click('#stop');
   await page.waitForSelector('.pagestrip');
 
-  step('pass 2: choose SPREAD format, add 2 page photos, tap a turn, save');
+  step('pass 2: SPREAD format, 2 page photos, ✨ suggested turns, read-along words, save');
   await page.click('.seg button[data-v="spread"]');
   await page.setInputFiles('#pgs', [png1, png2]);
   await page.waitForSelector('.pagestrip.spread .pg');
   assert(await page.$$('.pagestrip .pg').then(x => x.length === 2), 'two page thumbs in the strip');
-  await page.click('#tap');
+  await page.click('#suggest');                             // promise: turns placed by each page's print
+  await page.waitForSelector('.pg .stamp:visible');
+  // promise: "the words on the screen to read along" — typed once, per page
+  await page.waitForSelector('#wordswrap');
+  await page.fill('#wtext', 'Goodnight moon goodnight stars all around the room');
+  await page.click('.pg[data-i="1"] img');                  // switch to page 2's words
+  await page.waitForFunction(() => document.querySelector('#wlabel').textContent.includes('page 2'));
+  await page.fill('#wtext', 'Sleep now little bear sleep now');
   await page.click('#save');
   await page.waitForSelector('.rec-hero:has-text("reading is ready")');
 
@@ -191,10 +198,13 @@ async function enterPin(page, digits) {
   const hintShown = await page.$eval('.rotate-hint', n => getComputedStyle(n).display !== 'none');
   assert(hintShown, 'rotate hint visible in portrait');
 
-  step('playback runs and reaches the calm end (no autoplay after)');
+  step('playback runs, read-along words light up, calm end (no autoplay after)');
+  assert(await page.$eval('#cap', n => n.style.display !== 'none' && n.textContent.includes('Goodnight')), 'page words on screen before play');
   await page.click('#pp');
   await page.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  await page.waitForFunction(() => document.querySelectorAll('#cap span.on').length > 0, null, { timeout: 5000 });
   await page.waitForSelector('.calm', { timeout: 15000 });
+  assert(await page.$eval('#cap', n => n.style.display === 'none'), 'caption steps aside for the calm end');
   assert((await page.textContent('.calm')).includes('The end'), 'calm end screen');
   await page.click('#shelf2');
 
@@ -285,9 +295,10 @@ async function enterPin(page, digits) {
   await page.click('#to-kid');
   await page.waitForSelector('.tile:has-text("Goodnight Moon")');
 
-  step('kid playback works from restored data (audio store round-trip)');
+  step('kid playback works from restored data (audio store + read-along words round-trip)');
   await page.click('.tile:has-text("Goodnight Moon")');
   await page.waitForSelector('.p-stage.spread');
+  assert(await page.$eval('#cap', n => n.textContent.includes('Goodnight')), 'typed page words survived backup → wipe → restore');
   await page.click('#pp');
   await page.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
   await page.click('.back');
@@ -345,6 +356,110 @@ async function enterPin(page, digits) {
   await page.waitForSelector('h1:has-text("The library")');
 
   // ---------- hardening ----------
+  step('PROMISE: "add it later" — photograph a cover from the book\'s page; keep a copy downloads');
+  await page.click('.rowitem:has-text("Goodnight Moon")');
+  await page.waitForSelector('#cvlater');
+  const coverBefore = await page.evaluate(async () => {
+    const b = (await DB.books.all()).find(x => x.title === 'Goodnight Moon');
+    return b.cover ? b.cover.size : 0;
+  });
+  await page.setInputFiles('#cvlater', png1);
+  await page.waitForSelector('.toast.show:has-text("new cover")');
+  const coverAfter = await page.evaluate(async () => {
+    const b = (await DB.books.all()).find(x => x.title === 'Goodnight Moon');
+    return b.cover ? b.cover.size : 0;
+  });
+  assert(coverAfter > 0 && coverAfter !== coverBefore, 'cover photo added after the fact');
+  const [copyDl] = await Promise.all([page.waitForEvent('download'), page.click('[data-dl]')]);
+  const copyPath = path.join(TMP, 'keep-a-copy.' + copyDl.suggestedFilename().split('.').pop());
+  await copyDl.saveAs(copyPath);
+  assert(fs.statSync(copyPath).size > 1000, '"keep a copy" downloads the real audio');
+  await page.click('.back');  // book → library
+
+  step('PROMISE: chapters arrive like a show — badge, episode list, next-chapter offer');
+  await page.click('.back'); // library → home
+  await page.click('.home-card:has-text("Record a reading")');
+  await page.click('.pick:has-text("Dad")');
+  await page.click('#newb');
+  await page.fill('#ti', 'The Long Tale');
+  await page.click('#save');
+  await page.click('.rowitem:has-text("The Long Tale")');
+  await page.click('.pick:has-text("Start it as a serial")');
+  await page.waitForSelector('#rec');
+  await page.click('#rec'); await sleep(1300); await page.click('#stop');
+  await page.waitForSelector('#save');
+  await page.click('#save');
+  await page.waitForSelector('.rec-hero:has-text("new chapter waiting")');
+  await page.click('#another');                       // promise on the done screen: record the next chapter
+  await page.click('.pick:has-text("Dad")');
+  await page.click('.rowitem:has-text("The Long Tale")');
+  await page.waitForSelector('.pick:has-text("The next chapter — Chapter 2")');
+  await page.click('.pick:has-text("The next chapter — Chapter 2")');
+  await page.waitForSelector('#rec');
+  await page.click('#rec'); await sleep(1300); await page.click('#stop');
+  await page.waitForSelector('#save');
+  await page.click('#save');
+  await page.waitForSelector('.rec-hero:has-text("reading is ready")');
+  await page.click('#kid');
+  await page.waitForSelector('.tile:has-text("The Long Tale") .badge-new'); // calm "new chapter" badge
+  await page.click('.tile:has-text("The Long Tale")');
+  await page.waitForSelector('h1:has-text("The Long Tale")');
+  assert((await page.textContent('body')).includes('a chapter at a time'), 'episode list frames chapters like a show');
+  assert(await page.$$('.pick').then(x => x.length === 2), 'two chapters listed');
+  await page.click('.pick:has-text("Chapter 1")');
+  await page.click('#pp');
+  await page.waitForSelector('.calm', { timeout: 15000 });
+  await page.waitForSelector('#next:has-text("Chapter 2")');  // the calm end offers the next chapter
+  await page.click('#next');
+  await page.waitForSelector('.p-stage');
+  await page.click('#pp');
+  await page.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  await page.click('.back');
+
+  step('PROMISE: quiet multi-voice — the picker appears once a book truly has 2 voices');
+  await page.click('#gate'); await enterPin(page, '1234');
+  await page.click('.home-card:has-text("The people who read")');
+  await page.fill('#nm', 'Grandma'); await page.fill('#rel', 'Grandma');
+  await page.click('#add');
+  await page.waitForSelector('.rowitem:has-text("Grandma")');
+  await page.click('.back');
+  await page.click('.home-card:has-text("Record a reading")');
+  await page.click('.pick:has-text("Grandma")');
+  await page.click('.rowitem:has-text("Goodnight Moon")');
+  await page.click('.pick:has-text("The whole book")');
+  await page.waitForSelector('#rec');
+  await page.click('#rec'); await sleep(1200); await page.click('#stop');
+  await page.waitForSelector('#save');
+  await page.click('#save');
+  await page.waitForSelector('.rec-hero:has-text("reading is ready")');
+  await page.click('#kid');
+  await page.click('.tile:has-text("Goodnight Moon")');
+  await page.waitForSelector('p:has-text("Whose voice tonight?")');
+  assert(await page.$$('.pick').then(x => x.length === 2), 'two voices offered');
+  await page.click('.pick:has-text("Grandma")');
+  await page.waitForSelector('.p-stage');
+  await page.click('#pp');
+  await page.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  await page.click('.back');
+
+  step('PROMISE: the kid cover studio — finger-paint becomes the cover');
+  const studioBefore = await page.evaluate(async () => (await DB.books.all()).find(x => x.title === 'The Long Tale').cover);
+  await page.click('.tile:has-text("The Long Tale") .tile-crayon');
+  await page.waitForSelector('.studio-canvas');
+  const box = await page.$eval('.studio-canvas', n => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+  await page.mouse.move(box.x + box.w * 0.3, box.y + box.h * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.w * 0.7, box.y + box.h * 0.6, { steps: 8 });
+  await page.mouse.up();
+  await page.click('.studio-wrap #save');
+  await page.waitForSelector('.toast.show:has-text("artist’s cover")');
+  await page.waitForSelector('.shelf-head');   // kid mode saves return to the shelf
+  const studioAfter = await page.evaluate(async () => { const c = (await DB.books.all()).find(x => x.title === 'The Long Tale').cover; return c ? c.size : 0; });
+  assert(studioAfter > 0 && studioAfter !== (studioBefore && studioBefore.size), 'the painting became the cover');
+  await page.click('#gate'); await enterPin(page, '1234');
+  await page.click('.home-card:has-text("The library")');
+  await page.waitForSelector('h1:has-text("The library")');
+
   step('HARDEN: a failed save is loud and lossless (quota → draft kept, no orphan rows)');
   await page.click('.back'); // library → home
   await page.click('.home-card:has-text("Record a reading")');
@@ -458,6 +573,8 @@ async function enterPin(page, digits) {
   await pageE.click('#to-kid');
   await pageE.waitForSelector('.tile:has-text("Goodnight Moon") .badge-new');
   await pageE.click('.tile:has-text("Goodnight Moon")');
+  await pageE.waitForSelector('.pick, .p-stage');           // two voices traveled in the parcel → picker
+  if (await pageE.$('p:has-text("Whose voice tonight?")')) await pageE.click('.pick:has-text("Dad")');
   await pageE.waitForSelector('.p-stage.spread');
   await pageE.click('#pp');
   await pageE.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
@@ -588,6 +705,8 @@ async function enterPin(page, digits) {
   await pageG.waitForSelector('.corner-pills');
   await pageG.click('.corner-pill:has-text("Mei")');
   await pageG.click('.tile:has-text("Goodnight Moon")');
+  await pageG.waitForSelector('.pick, .p-stage');
+  if (await pageG.$('p:has-text("Whose voice tonight?")')) await pageG.click('.pick:has-text("Dad")');
   await pageG.waitForSelector('.p-stage.spread');
   await pageG.click('#pp');
   await pageG.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
@@ -801,6 +920,47 @@ async function enterPin(page, digits) {
   assert(await pageH.evaluate(async () => !!(await DB.settings.get('alphaAck'))), 'IndexedDB untouched by the self-update');
   swTag = null;
   await ctxH.close();
+
+  // ============ PART F: the voice-memo share target (the Android promise) ============
+  const ctxS = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const pageS = await ctxS.newPage();
+  pageS.on('pageerror', e => errors.push('S: ' + e.message));
+  pageS.on('dialog', d => d.accept(''));
+
+  step('PROMISE: share a voice memo to the app → "a recording arrived" → straight to a reading');
+  await pageS.goto(`http://localhost:${PORT}/app/`);
+  await pageS.click('#ack');
+  await pageS.click('#gate');
+  await enterPin(pageS, '1111'); await enterPin(pageS, '1111');
+  await pageS.fill('#nm', 'Pia');
+  await pageS.click('#save');
+  await pageS.click('.home-card:has-text("The people who read")');
+  await pageS.fill('#nm', 'Papa'); await pageS.click('#add');
+  await pageS.waitForSelector('.rowitem:has-text("Papa")');
+  await sleep(800);              // let the SW claim
+  await pageS.reload();          // controlled page, like an installed app
+  await pageS.waitForSelector('.home-grid, .shelf-head, .pinpad');
+  const shared = await pageS.evaluate(async b64 => {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const fd = new FormData();
+    fd.append('audio', new File([bytes], 'grandpa memo.wav', { type: 'audio/wav' }));
+    const res = await fetch('share-inbox', { method: 'POST', body: fd });
+    return { ok: res.ok || res.redirected, controlled: !!navigator.serviceWorker.controller };
+  }, wavB64);
+  assert(shared.controlled && shared.ok, 'share POST intercepted by the service worker');
+  await pageS.reload();
+  await pageS.waitForSelector('.toast.show:has-text("A recording arrived")');
+  await pageS.click('#gate'); await enterPin(pageS, '1111');
+  await pageS.click('.home-card:has-text("A recording arrived")');
+  await pageS.click('.pick:has-text("Papa")');
+  await pageS.click('#told');
+  await pageS.fill('#st', 'From the Share Sheet');
+  await pageS.click('#next');
+  await pageS.waitForSelector('h1:has-text("Pass 2")');   // audio already exists → pass 1 skipped, as promised
+  await pageS.click('#save');
+  await pageS.waitForSelector('.rec-hero:has-text("reading is ready")');
+  assert(await pageS.$('.card:has-text("close the loop")'), 'thank-you loop offered for a voice from afar');
+  await ctxS.close();
 
   await browser.close();
   server.close();

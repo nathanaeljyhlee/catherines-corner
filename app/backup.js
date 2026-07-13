@@ -153,7 +153,7 @@
     for (const p of b.pages || []) {
       const f = 'images/page-' + p.id + '.' + extOf(p.blob.type);
       files.push({ name: f, bytes: new Uint8Array(await p.blob.arrayBuffer()) });
-      bo.pages.push({ id: p.id, type: p.type, file: f, mime: p.blob.type });
+      bo.pages.push({ id: p.id, type: p.type, file: f, mime: p.blob.type, text: p.text || null });
     }
     return bo;
   }
@@ -270,7 +270,7 @@
       };
       if (b.cover && map.has(b.cover.file)) book.cover = new Blob([map.get(b.cover.file)], { type: b.cover.mime });
       for (const p of b.pages || []) {
-        if (map.has(p.file)) book.pages.push({ id: p.id, type: p.type, blob: new Blob([map.get(p.file)], { type: p.mime }) });
+        if (map.has(p.file)) book.pages.push({ id: p.id, type: p.type, text: p.text || null, blob: new Blob([map.get(p.file)], { type: p.mime }) });
       }
       await DB.books.save(book); counts.books++;
     }
@@ -370,7 +370,7 @@
     if (m.book) {
       const b = m.book;
       const pages = (b.pages || []).filter(p => map.has(p.file))
-        .map(p => ({ id: p.id, type: p.type, blob: new Blob([map.get(p.file)], { type: p.mime }) }));
+        .map(p => ({ id: p.id, type: p.type, text: p.text || null, blob: new Blob([map.get(p.file)], { type: p.mime }) }));
       const cover = b.cover && map.has(b.cover.file) ? new Blob([map.get(b.cover.file)], { type: b.cover.mime }) : null;
       const existing = await DB.books.get(b.id);
       if (existing && existing.cornerId === targetCornerId) {

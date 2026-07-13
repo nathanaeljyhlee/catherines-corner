@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.10.2';
+  const APP_VERSION = '1.11.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------

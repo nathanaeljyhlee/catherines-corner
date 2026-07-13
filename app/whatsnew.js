@@ -14,6 +14,22 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.11', slides: [
+        {
+          art: '<span class="capart">Goodnight <span class="hl">moon</span></span>',
+          sub: 'typed once — for every voice',
+          title: 'Words on screen — read along',
+          text: 'On the “line up the pages” step, type or paste a page’s words. At playback they sit under the picture and light up gently as the voice reads — your child follows along, and grows into reading.',
+        },
+        {
+          art: '📷',
+          sub: 'on the book’s page',
+          title: 'Add a cover photo any time',
+          text: 'Skipped the cover when you added a book? The book’s page now has “New cover photo” — photograph your copy whenever you like, crayon marks and all.',
+        },
+      ],
+    },
+    {
       v: '1.10', slides: [
         {
           art: '📱 <span class="arrows">⇄</span> 📱',
