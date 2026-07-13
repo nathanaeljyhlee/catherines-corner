@@ -1,7 +1,10 @@
 /* Catherine's Corner — full backup & restore.
    One plain .zip: manifest.json + every audio file + every image, uncompressed (STORE),
    so a family can open it with any zip tool in twenty years — no app required.
-   Restore merges by id, so re-importing on the same device never duplicates or destroys. */
+   Restore merges by id, so re-importing on the same device never duplicates or destroys.
+   Format v2 adds corners (one shelf per child) and per-book page format; v1
+   backups still restore — their rows are filed under a corner made from the
+   manifest's cornerName. */
 
 (function () {
   'use strict';
@@ -93,13 +96,20 @@
       if (method !== 0) throw new Error('This zip uses compression this app can’t read.');
       const lnLen = dv.getUint16(lho + 26, true), lxLen = dv.getUint16(lho + 28, true);
       const dataStart = lho + 30 + lnLen + lxLen;
-      out.set(name, u8.subarray(dataStart, dataStart + size));
+      const bytes = u8.subarray(dataStart, dataStart + size);
+      // Families keep these zips for years — verify every checksum, so a
+      // bit-rotted or truncated backup is refused whole instead of restoring
+      // silently corrupted voices.
+      if (crc32(bytes) !== dv.getUint32(p + 16, true)) {
+        throw new Error('This backup file is damaged (“' + name + '” fails its checksum) — nothing was changed. Try another copy of the backup.');
+      }
+      out.set(name, bytes);
       p += 46 + nLen + xLen + cLen;
     }
     return out;
   }
 
-  // ---------- backup / restore ----------
+  // ---------- mime ↔ extension ----------
   const EXT = {
     'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/m4a': 'm4a', 'audio/aac': 'aac',
     'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav',
@@ -124,14 +134,15 @@
     return new Blob([file], { type });
   }
 
+  // ---------- backup / restore ----------
   async function exportAll() {
-    const [readers, books, readings, requests, cornerName] = await Promise.all([
-      DB.readers.all(), DB.books.all(), DB.readings.all(), DB.requests.all(), DB.settings.get('cornerName'),
+    const [corners, readers, books, readings, requests, activeCorner] = await Promise.all([
+      DB.corners.all(), DB.readers.all(), DB.books.all(), DB.readings.all(), DB.requests.all(), DB.corners.active(),
     ]);
     const files = [];
     const booksOut = [];
     for (const b of books) {
-      const bo = { id: b.id, title: b.title, createdAt: b.createdAt, cover: null, pages: [] };
+      const bo = { id: b.id, title: b.title, cornerId: b.cornerId ?? null, pageFormat: b.pageFormat || 'single', createdAt: b.createdAt, cover: null, pages: [] };
       if (b.cover) {
         const f = 'images/cover-' + b.id + '.' + extOf(b.cover.type);
         files.push({ name: f, bytes: new Uint8Array(await b.cover.arrayBuffer()) });
@@ -146,35 +157,90 @@
     }
     const readingsOut = [];
     for (const r of readings) {
-      const { audioBlob, ...meta } = r;
+      const { audioBlob, ...meta } = r;   // tolerate any pre-v2 stragglers
+      const blob = (await DB.audio.get(r.id)) || audioBlob || null;
       let audio = null;
-      if (audioBlob) {
-        const f = 'audio/' + r.id + '.' + audioExt(audioBlob.type);
-        files.push({ name: f, bytes: new Uint8Array(await audioBlob.arrayBuffer()) });
-        audio = { file: f, mime: audioBlob.type };
+      if (blob) {
+        const f = 'audio/' + r.id + '.' + audioExt(blob.type);
+        files.push({ name: f, bytes: new Uint8Array(await blob.arrayBuffer()) });
+        audio = { file: f, mime: blob.type };
       }
       readingsOut.push({ ...meta, audio });
     }
     const manifest = {
-      format: 'catherines-corner-backup', formatVersion: 1,
+      format: 'catherines-corner-backup', formatVersion: 2,
       exportedAt: new Date().toISOString(),
-      cornerName: cornerName || null,
-      readers, books: booksOut, readings: readingsOut, requests,
+      cornerName: activeCorner ? activeCorner.name : null,   // kept for humans reading the manifest
+      corners, readers, books: booksOut, readings: readingsOut, requests,
     };
     files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
     return makeZip(files);
+  }
+
+  // A v1 backup has no corners: its rows are filed under a corner matched (or
+  // made) from the manifest's cornerName, so nothing lands invisible.
+  async function cornerForV1(m) {
+    const corners = await DB.corners.all();
+    const name = m.cornerName || null;
+    if (name) {
+      const hit = corners.find(c => c.name === name);
+      if (hit) return hit.id;
+      const corner = { id: DB.uid(), name, createdAt: Date.now() };
+      await DB.corners.save(corner);
+      if (!corners.length) await DB.corners.setActive(corner.id);
+      return corner.id;
+    }
+    const active = await DB.corners.active();
+    return active ? active.id : null;
+  }
+
+  // Every file the manifest points at must actually be in the zip — checked
+  // BEFORE the first write, so a truncated backup can't restore readings with
+  // their voices missing.
+  function assertComplete(m, map) {
+    const missing = [];
+    for (const b of m.books || []) {
+      if (b.cover && b.cover.file && !map.has(b.cover.file)) missing.push(b.cover.file);
+      for (const p of b.pages || []) if (p.file && !map.has(p.file)) missing.push(p.file);
+    }
+    for (const r of m.readings || []) if (r.audio && r.audio.file && !map.has(r.audio.file)) missing.push(r.audio.file);
+    if (missing.length) {
+      throw new Error('This backup is incomplete — ' + missing.length + ' file' + (missing.length === 1 ? ' is' : 's are') +
+        ' missing inside the zip. Nothing was changed; try another copy of the backup.');
+    }
   }
 
   async function importFile(file) {
     const map = parseZip(await file.arrayBuffer());
     const mf = map.get('manifest.json');
     if (!mf) throw new Error('No manifest inside — is this a Catherine’s Corner backup?');
-    const m = JSON.parse(new TextDecoder().decode(mf));
+    let m;
+    try { m = JSON.parse(new TextDecoder().decode(mf)); }
+    catch (e) { throw new Error('This backup’s manifest can’t be read — the file may be damaged. Nothing was changed.'); }
     if (m.format !== 'catherines-corner-backup') throw new Error('This isn’t a Catherine’s Corner backup.');
-    const counts = { readers: 0, books: 0, readings: 0, requests: 0 };
+    assertComplete(m, map);
+    const v1 = !(m.formatVersion >= 2);
+    const fallbackCornerId = v1 ? await cornerForV1(m) : null;
+    const counts = { corners: 0, readers: 0, books: 0, readings: 0, requests: 0 };
+    // Corners merge by id, then by name: restoring onto a device where the
+    // same child's corner was just set up must land on THAT shelf, not spawn
+    // a twin. Remapped ids are applied to every scoped row below.
+    const cornerIdMap = new Map();
+    const existingCorners = await DB.corners.all();
+    for (const c of m.corners || []) {
+      counts.corners++;
+      if (existingCorners.some(x => x.id === c.id)) continue;
+      const byName = existingCorners.find(x => x.name === c.name);
+      if (byName) { cornerIdMap.set(c.id, byName.id); continue; }
+      await DB.corners.save(c);
+    }
+    const mapCorner = id => id == null ? fallbackCornerId : (cornerIdMap.get(id) || id);
     for (const r of m.readers || []) { await DB.readers.save(r); counts.readers++; }
     for (const b of m.books || []) {
-      const book = { id: b.id, title: b.title, createdAt: b.createdAt, cover: null, pages: [] };
+      const book = {
+        id: b.id, title: b.title, cornerId: mapCorner(b.cornerId),
+        pageFormat: b.pageFormat || 'single', createdAt: b.createdAt, cover: null, pages: [],
+      };
       if (b.cover && map.has(b.cover.file)) book.cover = new Blob([map.get(b.cover.file)], { type: b.cover.mime });
       for (const p of b.pages || []) {
         if (map.has(p.file)) book.pages.push({ id: p.id, type: p.type, blob: new Blob([map.get(p.file)], { type: p.mime }) });
@@ -182,12 +248,18 @@
       await DB.books.save(book); counts.books++;
     }
     for (const r of m.readings || []) {
-      const { audio, ...meta } = r;
-      const reading = { ...meta, audioBlob: audio && map.has(audio.file) ? new Blob([map.get(audio.file)], { type: audio.mime }) : null };
-      await DB.readings.save(reading); counts.readings++;
+      const { audio, audioBlob, ...meta } = r;
+      meta.cornerId = mapCorner(meta.cornerId);
+      await DB.readings.save(meta);
+      if (audio && map.has(audio.file)) await DB.audio.set(r.id, new Blob([map.get(audio.file)], { type: audio.mime }));
+      counts.readings++;
     }
-    for (const q of m.requests || []) { await DB.requests.save(q); counts.requests++; }
-    if (m.cornerName) await DB.settings.set('cornerName', m.cornerName);
+    for (const q of m.requests || []) {
+      q.cornerId = mapCorner(q.cornerId);
+      await DB.requests.save(q); counts.requests++;
+    }
+    // Make sure a shelf is showing after a restore onto a fresh device.
+    await DB.corners.active();
     return counts;
   }
 

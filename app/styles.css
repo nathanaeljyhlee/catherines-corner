@@ -74,6 +74,12 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
   font-size:16px; background:rgba(255,255,255,.94); border:1px solid var(--line); box-shadow:0 4px 10px -4px var(--shadow); cursor:pointer}
 .tile.story .cover.ph{background:#2e3a4d; color:#f3e6cd; font-size:30px}
 
+/* corner pills — siblings' shelves side by side */
+.corner-pills{display:flex; gap:8px; flex-wrap:wrap; margin:-4px 0 14px}
+.corner-pill{border:1px solid var(--line); background:#fff; color:var(--soft); font-size:13px; font-weight:500;
+  padding:6px 14px; border-radius:999px}
+.corner-pill.on{background:var(--accent); border-color:var(--accent); color:#fff}
+
 /* avatars */
 .av{width:34px; height:34px; border-radius:50%; display:inline-grid; place-items:center; color:#fff;
   font-family:'Newsreader',serif; font-size:15px; flex:none; border:2px solid #fff; box-shadow:0 2px 6px -2px var(--shadow)}
@@ -118,6 +124,18 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .p-nudge{width:36px; height:36px; border-radius:50%; border:1px solid var(--line); background:#fff; color:var(--soft);
   font-size:11.5px; flex:none; padding:0; font-variant-numeric:tabular-nums}
 
+/* two-page spreads: the stage is wide, so give it room — and in landscape
+   (where spreads belong) let the whole player breathe */
+.p-stage.spread img{max-height:52vh}
+.rotate-hint{position:absolute; bottom:10px; left:12px; font-size:11px; color:#7a5326; background:rgba(251,241,226,.94);
+  border:1px solid #e7c79c; padding:3px 10px; border-radius:999px}
+@media (orientation:landscape){
+  #app.wide{max-width:1160px}
+  .p-stage img{max-height:70vh}
+  .p-stage.spread img{max-height:72vh}
+  .rotate-hint{display:none}
+}
+
 /* calm end */
 .calm{padding:46px 20px; text-align:center}
 .calm .moon{font-size:44px}
@@ -141,9 +159,14 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .rec-note{font-size:13px; color:var(--muted); max-width:40ch; margin:8px auto 0}
 
 /* pass 2 */
+.seg{display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; background:#fff; margin:8px 0 2px}
+.seg button{border:none; background:none; font-size:12.5px; color:var(--soft); padding:7px 14px}
+.seg button.on{background:var(--accent); color:#fff}
 .pagestrip{display:flex; gap:10px; overflow-x:auto; padding:6px 2px 10px}
 .pagestrip .pg{position:relative; flex:none; width:92px; border:2px solid var(--line); border-radius:10px; overflow:hidden; background:#fff}
 .pagestrip .pg img{width:100%; aspect-ratio:3/4; object-fit:cover; display:block}
+.pagestrip.spread .pg{width:150px}
+.pagestrip.spread .pg img{aspect-ratio:3/2}
 .pagestrip .pg.current{border-color:var(--warm)}
 .pagestrip .pg .k{position:absolute; top:4px; left:4px; background:rgba(255,255,255,.92); border:1px solid var(--line);
   border-radius:999px; font-size:10px; padding:1px 7px}
@@ -204,6 +227,8 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .rowbtns .btn{padding:8px 13px; font-size:13px}
 
 .back{border:none; background:none; color:var(--muted); font-size:13px; padding:0; margin:14px 0 0; text-decoration:underline; text-underline-offset:3px}
+.linklike{border:none; background:none; color:var(--warm); font-size:inherit; font-weight:600; letter-spacing:inherit;
+  text-transform:inherit; padding:0; text-decoration:underline; text-underline-offset:3px}
 
 /* cover studio */
 .studio-wrap{display:flex; flex-direction:column; gap:14px; align-items:center}

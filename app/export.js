@@ -21,10 +21,17 @@
     return ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m)) || '';
   }
 
-  // exportReading({reading, book, reader, onProgress}) -> {blob, ext}
-  async function exportReading({ reading, book, reader, onProgress }) {
-    const W = 1280, H = 960;
+  // exportReading({reading, audioBlob, book, reader, onProgress}) -> {blob, ext}
+  async function exportReading({ reading, audioBlob, book, reader, onProgress }) {
+    if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream ||
+        !(window.AudioContext || window.webkitAudioContext)) {
+      throw new Error('this browser can’t render videos — “⤓ keep a copy” downloads the audio anywhere');
+    }
     const pages = (book && book.pages) || [];
+    // Two-page spreads are wide — render them on a 16:9 canvas so both pages
+    // show big; single pages keep the book-shaped 4:3 frame.
+    const spread = !!(book && book.pageFormat === 'spread' && pages.length);
+    const W = 1280, H = spread ? 720 : 960;
     const loaded = await Promise.all(pages.map(p => loadImg(p.blob)));
     const cover = book && book.cover ? await loadImg(book.cover) : null;
     const title = book ? book.title : (reading.title || 'A bedtime story');
@@ -37,7 +44,7 @@
 
     const AC = window.AudioContext || window.webkitAudioContext;
     const actx = new AC();
-    const audioUrl = URL.createObjectURL(reading.audioBlob);
+    const audioUrl = URL.createObjectURL(audioBlob || reading.audioBlob);
     const audioEl = new Audio(audioUrl);
     await new Promise((res, rej) => { audioEl.onloadedmetadata = res; audioEl.onerror = () => rej(new Error('audio failed to load')); });
     const srcNode = actx.createMediaElementSource(audioEl); // diverts sound into the graph — export is silent to the room

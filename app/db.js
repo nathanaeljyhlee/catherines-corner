@@ -1,17 +1,69 @@
-/* Catherine's Corner — local-first storage (IndexedDB).
-   Aggregates per spec: Reader · Book (owns pages) · Reading (owns audio + timing) · BookRequest.
-   Blobs live in the row; metadata is plain fields. Export is first-class (permanence anti-pattern 8). */
+/* Catherine's Corner — local-first storage (IndexedDB), schema v2.
+   Aggregates per spec: Corner (a child's shelf) · Reader (global — people read
+   to every child) · Book (owns pages, belongs to a corner) · Reading (timing +
+   metadata, belongs to a corner) · BookRequest (belongs to a corner).
+
+   v2 structural decisions, both for pilot scale:
+   - Audio lives in its own store keyed by reading id. Reading rows are light
+     metadata, so shelf/home/library screens never haul megabytes of blobs
+     into memory just to count or list things.
+   - Corners are first-class rows, not a single settings string — one device
+     can hold a shelf per child, and every book/reading/request is scoped to
+     its corner. v1 data is migrated in place (one corner, everything filed
+     under it) the first time the new code opens the database. */
 
 const DB_NAME = 'catherines-corner';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let _db = null;
+
+function uid() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); }
+
+// v1 → v2, inside the versionchange transaction (plain IDB callbacks only —
+// awaiting anything foreign here would let the transaction close under us).
+function migrateV1(t) {
+  const settings = t.objectStore('settings');
+  const corners = t.objectStore('corners');
+  const cornerId = uid();
+  const nameReq = settings.get('cornerName');
+  nameReq.onsuccess = () => {
+    const name = nameReq.result && nameReq.result.value;
+    if (name) {
+      corners.put({ id: cornerId, name, createdAt: Date.now() });
+      settings.put({ key: 'activeCornerId', value: cornerId });
+    }
+    const stamp = store => {
+      const cur = t.objectStore(store).openCursor();
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return;
+        const row = c.value;
+        if (name && row.cornerId == null) { row.cornerId = cornerId; c.update(row); }
+        c.continue();
+      };
+    };
+    stamp('books');
+    stamp('requests');
+    // readings: stamp the corner AND lift the audio blob into its own store
+    const audio = t.objectStore('audio');
+    const cur = t.objectStore('readings').openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (!c) return;
+      const row = c.value;
+      if (row.audioBlob) { audio.put({ id: row.id, blob: row.audioBlob }); delete row.audioBlob; }
+      if (name && row.cornerId == null) row.cornerId = cornerId;
+      c.update(row);
+      c.continue();
+    };
+  };
+}
 
 function openDB() {
   if (_db) return Promise.resolve(_db);
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = e => {
       const db = req.result;
       if (!db.objectStoreNames.contains('readers')) db.createObjectStore('readers', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('books')) db.createObjectStore('books', { keyPath: 'id' });
@@ -22,9 +74,15 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains('requests')) db.createObjectStore('requests', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('corners')) db.createObjectStore('corners', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio', { keyPath: 'id' });
+      if (e.oldVersion >= 1 && e.oldVersion < 2) migrateV1(req.transaction);
     };
     req.onsuccess = () => { _db = req.result; resolve(_db); };
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(req.error || new Error('The library on this device couldn’t be opened.'));
+    // Another tab holding an older schema blocks the upgrade forever — say so
+    // instead of hanging on a blank screen.
+    req.onblocked = () => reject(new Error('Catherine’s Corner is open in another tab — close it and reopen this one. Nothing is lost.'));
   });
 }
 
@@ -46,6 +104,14 @@ function getAll(store) {
   }));
 }
 
+function getAllByIndex(store, index, key) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).index(index).getAll(key);
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
 function getOne(store, id) {
   return openDB().then(db => new Promise((resolve, reject) => {
     const req = db.transaction(store, 'readonly').objectStore(store).get(id);
@@ -57,9 +123,29 @@ function getOne(store, id) {
 function put(store, obj) { return tx(store, 'readwrite', s => { s.put(obj); return obj; }); }
 function del(store, id) { return tx(store, 'readwrite', s => { s.delete(id); }); }
 
-function uid() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); }
+// Corner scoping: rows are filtered in JS after a cheap metadata getAll —
+// explicit, and rows never vanish behind a sparse index.
+const inCorner = (rows, cornerId) => cornerId == null ? rows : rows.filter(r => r.cornerId === cornerId);
 
 const DBAPI = {
+  corners: {
+    all: () => getAll('corners'),
+    get: id => getOne('corners', id),
+    save: c => put('corners', c),
+    remove: id => del('corners', id),
+    // The corner whose shelf is showing. Falls back to the first corner and
+    // heals the pointer, so a deleted/never-set active id can't strand the UI.
+    async active() {
+      const [corners, activeId] = await Promise.all([getAll('corners'), DBAPI.settings.get('activeCornerId')]);
+      if (!corners.length) return null;
+      const hit = corners.find(c => c.id === activeId);
+      if (hit) return hit;
+      const first = corners.sort((a, b) => a.createdAt - b.createdAt)[0];
+      await DBAPI.settings.set('activeCornerId', first.id);
+      return first;
+    },
+    setActive: id => DBAPI.settings.set('activeCornerId', id),
+  },
   readers: {
     all: () => getAll('readers'),
     get: id => getOne('readers', id),
@@ -67,27 +153,74 @@ const DBAPI = {
     remove: id => del('readers', id),
   },
   books: {
-    all: () => getAll('books'),
+    all: async cornerId => inCorner(await getAll('books'), cornerId),
     get: id => getOne('books', id),
     save: b => put('books', b),
     remove: id => del('books', id),
   },
   readings: {
-    all: () => getAll('readings'),
+    all: async cornerId => inCorner(await getAll('readings'), cornerId),
     get: id => getOne('readings', id),
     save: r => put('readings', r),
-    remove: id => del('readings', id),
-    forBook: async bookId => (await getAll('readings')).filter(r => r.bookId === bookId),
-    told: async () => (await getAll('readings')).filter(r => !r.bookId),
+    remove: async id => { await del('readings', id); await del('audio', id); },
+    forBook: bookId => getAllByIndex('readings', 'byBook', bookId),
+    told: async cornerId => inCorner(await getAll('readings'), cornerId).filter(r => !r.bookId),
+    // The one write that must never half-happen: reading metadata and its
+    // voice land in ONE transaction (a quota abort rolls both back — no
+    // orphan rows), then the audio is read back to prove the browser really
+    // kept it before anyone is told "saved".
+    async saveWithAudio(reading, blob) {
+      const db = await openDB();
+      await new Promise((resolve, reject) => {
+        const t = db.transaction(['readings', 'audio'], 'readwrite');
+        t.objectStore('audio').put({ id: reading.id, blob });
+        t.objectStore('readings').put(reading);
+        t.oncomplete = resolve;
+        t.onerror = () => reject(t.error || new Error('save failed'));
+        t.onabort = () => reject(t.error || new Error('save aborted'));
+      });
+      const back = await DBAPI.audio.get(reading.id);
+      if (!back || back.size !== blob.size) {
+        await DBAPI.readings.remove(reading.id).catch(() => {});
+        throw new Error('The recording didn’t survive the write — nothing was saved.');
+      }
+      return reading;
+    },
+  },
+  // A reading's voice, fetched only when something actually plays or exports.
+  audio: {
+    get: async readingId => { const row = await getOne('audio', readingId); return row ? row.blob : null; },
+    set: (readingId, blob) => put('audio', { id: readingId, blob }),
+    remove: readingId => del('audio', readingId),
   },
   requests: {
-    all: () => getAll('requests'),
+    all: async cornerId => inCorner(await getAll('requests'), cornerId),
+    get: id => getOne('requests', id),
     save: r => put('requests', r),
     remove: id => del('requests', id),
   },
   settings: {
     get: async key => { const row = await getOne('settings', key); return row ? row.value : null; },
     set: (key, value) => put('settings', { key, value }),
+  },
+  // Ask the browser to treat the corner as must-keep, and report honestly
+  // whether it agreed (surfaced under "Keep it safe").
+  async requestPersistence() {
+    try {
+      if (navigator.storage && navigator.storage.persist) return await navigator.storage.persist();
+    } catch (e) { /* not offered here */ }
+    return null;
+  },
+  async storageStatus() {
+    const out = { persisted: null, usage: null, quota: null };
+    try { if (navigator.storage && navigator.storage.persisted) out.persisted = await navigator.storage.persisted(); } catch (e) {}
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const e = await navigator.storage.estimate();
+        out.usage = e.usage ?? null; out.quota = e.quota ?? null;
+      }
+    } catch (e) {}
+    return out;
   },
   uid,
 };
