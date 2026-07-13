@@ -120,7 +120,8 @@ async function enterPin(page, digits) {
 
   const browser = await chromium.launch({
     executablePath: CHROMIUM,
-    args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
+    args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required',
+      '--disable-features=WebRtcHideLocalIpsWithMdns'],
   });
   const errors = [];
 
@@ -475,6 +476,112 @@ async function enterPin(page, digits) {
   await page.waitForSelector('h1:has-text("Keep it safe")');
   assert((await page.textContent('body')).includes('your corner id'.toLowerCase()) || await page.$('#fid'), 'Corner ID surfaced under Keep it safe');
   await page.click('.back'); // safety → home
+
+  step('WHAT\'S NEW: badge appears after an update, walkthrough carousel opens, badge clears');
+  assert(!(await page.$('#newbadge')), 'no badge when this version has been seen');
+  await page.evaluate(() => DB.settings.set('seenVersion', '1.7.1'));   // simulate a device that updated
+  await page.reload();
+  await page.waitForSelector('#newbadge');
+  await page.click('#newbadge');
+  await page.waitForSelector('h1:has-text("What’s new")');
+  const slideCount = await page.$$('.carousel .slide').then(x => x.length);
+  assert(slideCount >= 5, 'walkthrough carousel has slides (got ' + slideCount + ')');
+  assert((await page.textContent('.carousel')).includes('Sync nearby') || (await page.textContent('.carousel')).includes('sync nearby'), 'newest feature leads');
+  await page.click('.back');
+  await page.waitForSelector('.shelf-head');   // kid mode → back to the shelf
+  assert(!(await page.$('#newbadge')), 'badge gone once the walkthrough was seen');
+
+  step('NEARBY SYNC: two devices pair by hand-carried codes and merge over the wire');
+  const ctxG = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['microphone'] });
+  const pageG = await ctxG.newPage();
+  pageG.on('pageerror', e => errors.push('G: ' + e.message));
+  pageG.on('dialog', d => d.accept(''));
+  await pageG.goto(`http://localhost:${PORT}/app/`);
+  await pageG.click('#ack');
+  await pageG.click('#gate');
+  await enterPin(pageG, '9999'); await enterPin(pageG, '9999');
+  await pageG.fill('#nm', 'Zoe');
+  await pageG.click('#save');
+  // Zoe's device records its own told story, so the merge is genuinely two-way
+  await pageG.click('.home-card:has-text("The people who read")');
+  await pageG.fill('#nm', 'Mum'); await pageG.click('#add');
+  await pageG.waitForSelector('.rowitem:has-text("Mum")');
+  await pageG.click('.back');
+  await pageG.click('.home-card:has-text("Record a reading")');
+  await pageG.click('.pick:has-text("Mum")');
+  await pageG.click('#told');
+  await pageG.fill('#st', 'Zoe and the Comet');
+  await pageG.click('#next');
+  await pageG.click('#rec'); await sleep(1200); await pageG.click('#stop');
+  await pageG.waitForSelector('#sk');
+  await pageG.click('#save');
+  await pageG.waitForSelector('.rec-hero:has-text("reading is ready")');
+  await pageG.click('#home');
+  const preSync = {
+    a: await page.evaluate(async () => (await DB.readings.all()).length),
+    g: await pageG.evaluate(async () => (await DB.readings.all()).length),
+  };
+  // device A starts and shows its code
+  await page.click('#gate'); await enterPin(page, '1234');
+  await page.click('.home-card:has-text("Keep it safe")');
+  await page.click('#syncbtn');
+  await page.click('#mkoffer');
+  await page.waitForFunction(() => { const n = document.querySelector('#mycode'); return n && n.value.length > 50; });
+  const offerCode = await page.$eval('#mycode', n => n.value);
+  // device G answers with its reply code
+  await pageG.click('.home-card:has-text("Keep it safe")');
+  await pageG.click('#syncbtn');
+  await pageG.click('#haveoffer');
+  await pageG.fill('#theirs', offerCode);
+  await pageG.click('#accept');
+  await pageG.waitForFunction(() => { const n = document.querySelector('#mycode'); return n && n.value.length > 50; });
+  const answerCode = await pageG.$eval('#mycode', n => n.value);
+  // back on A: enter the reply → channel opens → both merge
+  await page.fill('#theirs', answerCode);
+  await page.click('#accept');
+  await page.waitForSelector('.sync-done', { timeout: 30000 });
+  await pageG.waitForSelector('.sync-done', { timeout: 30000 });
+  const postSync = {
+    a: await page.evaluate(async () => (await DB.readings.all()).length),
+    g: await pageG.evaluate(async () => (await DB.readings.all()).length),
+  };
+  assert(postSync.a === postSync.g, 'both devices hold the same number of readings (' + postSync.a + ' vs ' + postSync.g + ')');
+  assert(postSync.a === preSync.a + preSync.g, 'merge is lossless: ' + preSync.a + ' + ' + preSync.g + ' = ' + postSync.a);
+  const gGot = await pageG.evaluate(async () => {
+    const corners = await DB.corners.all();
+    const mei = corners.find(c => c.name === 'Mei');
+    const books = await DB.books.all(mei && mei.id);
+    return { hasMei: !!mei, hasMoon: books.some(b => b.title === 'Goodnight Moon'), corners: corners.length };
+  });
+  assert(gGot.hasMei && gGot.hasMoon, "Zoe's device received Mei's corner and book");
+  const aGot = await page.evaluate(async () => {
+    const corners = await DB.corners.all();
+    const zoe = corners.find(c => c.name === 'Zoe');
+    const told = zoe ? await DB.readings.told(zoe.id) : [];
+    return { hasZoe: !!zoe, hasComet: told.some(r => r.title === 'Zoe and the Comet') };
+  });
+  assert(aGot.hasZoe && aGot.hasComet, "device A received Zoe's corner and told story");
+  // synced audio actually plays on the receiving side
+  await page.click('#home2');            // A: done → home
+  await pageG.click('#home2');           // G: done → home
+  await pageG.click('#to-kid');
+  await pageG.waitForSelector('.corner-pills');
+  await pageG.click('.corner-pill:has-text("Mei")');
+  await pageG.click('.tile:has-text("Goodnight Moon")');
+  await pageG.waitForSelector('.p-stage.spread');
+  await pageG.click('#pp');
+  await pageG.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  // and syncing again finds nothing to do (idempotent) — checked via delta counts
+  const deltaCheck = await pageG.evaluate(async invA => {
+    const { counts } = await Backup.exportDelta(invA.r, invA.b);
+    return counts;
+  }, await page.evaluate(async () => {
+    const [r, b] = await Promise.all([DB.readings.all(), DB.books.all()]);
+    return { r: r.map(x => x.id), b: b.map(x => x.id) };
+  }));
+  assert(deltaCheck.readings === 0 && deltaCheck.books === 0, 'a second sync would have nothing to carry');
+  await ctxG.close();
+  // A's "done" button already landed it on grown-up home — ready for the next steps
 
   step('HARDEN: a corrupted backup zip is refused whole — nothing written');
   const corrupted = fs.readFileSync(zipPath);

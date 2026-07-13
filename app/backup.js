@@ -290,6 +290,34 @@
     return counts;
   }
 
+  // A backup containing only what the OTHER device is missing — the payload
+  // of nearby sync. Same format as a full backup, so the receiving side runs
+  // the exact restore path (corners merge by id/name, rows merge by id) that
+  // device moves have exercised since v1.1.1.
+  async function exportDelta(haveReadingIds, haveBookIds) {
+    const haveR = new Set(haveReadingIds || []);
+    const haveB = new Set(haveBookIds || []);
+    const [corners, readers, books, readings, activeCorner] = await Promise.all([
+      DB.corners.all(), DB.readers.all(), DB.books.all(), DB.readings.all(), DB.corners.active(),
+    ]);
+    const sendReadings = readings.filter(r => !haveR.has(r.id));
+    const referenced = new Set(sendReadings.map(r => r.bookId).filter(Boolean));
+    const sendBooks = books.filter(b => referenced.has(b.id) || !haveB.has(b.id));
+    const files = [];
+    const booksOut = [];
+    for (const b of sendBooks) booksOut.push(await packBook(b, files));
+    const readingsOut = [];
+    for (const r of sendReadings) readingsOut.push(await packReading(r, files));
+    const manifest = {
+      format: 'catherines-corner-backup', formatVersion: 2,
+      exportedAt: new Date().toISOString(),
+      cornerName: activeCorner ? activeCorner.name : null,
+      corners, readers, books: booksOut, readings: readingsOut, requests: [],
+    };
+    files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
+    return { blob: makeZip(files), counts: { readings: sendReadings.length, books: sendBooks.length } };
+  }
+
   // ---------- parcels: one book (or told story) from one family to another ----------
   // exportParcel({bookId} | {readingId}, toId?) → {blob, manifest}
   async function exportParcel({ bookId, readingId, toId }) {
@@ -381,5 +409,5 @@
     return counts;
   }
 
-  window.Backup = { exportAll, importFile, inspect, importBackup, exportParcel, importParcel, audioExt, normalizeAudioFile };
+  window.Backup = { exportAll, exportDelta, importFile, inspect, importBackup, exportParcel, importParcel, audioExt, normalizeAudioFile };
 })();

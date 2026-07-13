@@ -25,6 +25,11 @@ owner journey plus the seams that history shows break quietly:
 - **telemetry**: proven dormant while unconfigured (zero requests across the
   whole suite), delivers events to a fake collector once configured, and the
   family off switch stops sending while local counting continues
+- **what's new**: the badge appears only for updated devices, opens the
+  walkthrough carousel, and clears once seen
+- **nearby sync**: a real two-device WebRTC merge over loopback — pairing by
+  hand-carried codes, lossless both-ways merge (counts add up exactly),
+  synced audio plays on the receiving side, and a repeat sync carries nothing
 - **parcels**: a full two-family exchange — family A packs a book addressed
   to family B's Corner ID, B accepts (reader merged once, readings marked
   new, spread playback works), re-accepting adds nothing, and a mis-addressed

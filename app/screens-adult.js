@@ -365,6 +365,13 @@
       }
     };
 
+    const scard = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">two devices?</div>' +
+      '<p class="hint" style="margin-top:8px">📶 The family tablet and your phone can match shelves directly, over your own WiFi — no internet, nothing uploaded.</p>' +
+      '<div class="btn-row"><button class="btn" id="syncbtn">🔁 Sync with a nearby device</button></div></div>');
+    root.appendChild(scard);
+    scard.querySelector('#syncbtn').onclick = () => go('sync');
+
     const rcard = el(
       '<div class="card" style="margin-top:14px"><div class="kicker">restore · accept a parcel</div>' +
       '<p class="hint" style="margin-top:8px">Bring in a backup from this or another device, or a 📦 parcel another family sent you. Nothing here ever deletes anything.</p>' +
@@ -654,9 +661,9 @@
   // Counts only, kept on this device; they leave only when a grown-up
   // taps share — that snapshot is how alpha pain points reach the maker.
   // =========================================================
-  const AREA_ORDER = ['record', 'invite', 'guest', 'share', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
+  const AREA_ORDER = ['record', 'invite', 'guest', 'share', 'sync', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
   const AREA_LABELS = {
-    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', share: '📦 parcels', play: '📖 listening',
+    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', share: '📦 parcels', sync: '🔁 nearby sync', play: '📖 listening',
     library: '📚 the library', corners: '👧 corners', safety: '🗄 keep it safe', help: '❓ help',
     gate: '🔢 the grown-up code', error: '⚠️ rough edges',
   };
@@ -753,6 +760,7 @@
       'Their Corner ID? (optional — they can find it under Keep it safe.\n' +
       'Addressed parcels land on the right shelf without a second thought; leave blank to send it open.)', '');
     if (toId === null) return;   // changed their mind
+    const label = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '📦 packing…'; }
     try {
       const { blob, manifest } = await Backup.exportParcel(Object.assign({}, what, { toId }));
@@ -764,7 +772,7 @@
     } catch (err) {
       toast(err.message || 'The parcel couldn’t be packed.');
     }
-    if (btn) { btn.disabled = false; btn.textContent = '📦 Send to another Corner'; }
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 
   register('acceptParcel', async function acceptParcel(root, ctx) {

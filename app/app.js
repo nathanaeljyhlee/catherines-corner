@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.9.0';
+  const APP_VERSION = '1.10.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -114,8 +114,12 @@
       : S.mode === 'adult'
         ? '<span class="mode-pill">alpha &middot; grown-up mode &middot; <button id="to-kid">back to kid mode</button></span>'
         : '<span class="mode-pill">alpha · early test build</span>';
-    const bar = el('<div class="topbar"><span class="mark"><b>Catherine’s</b> Corner</span>' + pill + '</div>');
+    // ✨ appears whenever the app updated since this device last looked.
+    const unseen = !isGuest && window.WhatsNew && await WhatsNew.hasUnseen();
+    const bar = el('<div class="topbar"><span class="mark"><b>Catherine’s</b> Corner</span>' +
+      (unseen ? '<button class="newpill" id="newbadge" title="see what changed">✨ new</button>' : '') + pill + '</div>');
     $app.appendChild(bar);
+    if (unseen) bar.querySelector('#newbadge').onclick = () => go('whatsnew');
     if (!isGuest && S.mode === 'adult') bar.querySelector('#to-kid').onclick = () => { S.mode = 'kid'; go('shelf'); };
 
     const fn = screens[S.screen] || screens.shelf;
@@ -157,6 +161,7 @@
     root.appendChild(card);
     card.querySelector('#ack').onclick = async () => {
       await DB.settings.set('alphaAck', Date.now());
+      await DB.settings.set('seenVersion', APP_VERSION);   // fresh install: everything is new, no badge
       S.mode = 'kid';
       go('shelf');
     };

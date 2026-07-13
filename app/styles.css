@@ -74,6 +74,28 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
   font-size:16px; background:rgba(255,255,255,.94); border:1px solid var(--line); box-shadow:0 4px 10px -4px var(--shadow); cursor:pointer}
 .tile.story .cover.ph{background:#2e3a4d; color:#f3e6cd; font-size:30px}
 
+/* what's new: badge + walkthrough carousel */
+.newpill{border:1px solid #e7c79c; background:var(--highlight); color:#7a5326; font-size:12px; font-weight:600;
+  padding:5px 12px; border-radius:999px; margin-left:10px; cursor:pointer; white-space:nowrap}
+.carousel{display:flex; gap:12px; overflow-x:auto; scroll-snap-type:x mandatory; padding:4px 2px 12px; -webkit-overflow-scrolling:touch}
+.slide{flex:0 0 min(86%, 420px); scroll-snap-align:center; display:flex; flex-direction:column; gap:8px; position:relative}
+.slide-art{font-size:44px; text-align:center; padding:18px 0 6px; line-height:1.2}
+.slide-art .arrows{font-size:20px; color:var(--muted); vertical-align:middle}
+.slide-sub{font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--warm); text-align:center; font-weight:600}
+.slide-title{font-size:19px; font-weight:600; text-align:center; margin:2px 0}
+.slide-text{font-size:13.5px; color:var(--soft); line-height:1.5}
+.slide-v{position:absolute; top:12px; right:12px}
+.pillart{display:inline-block; border:1px solid var(--line); border-radius:999px; padding:6px 16px; font-size:15px;
+  background:#fff; color:var(--soft); vertical-align:middle}
+.pillart.on{background:var(--accent); border-color:var(--accent); color:#fff}
+.pgart{display:inline-block; width:44px; height:58px; background:#fff; border:2px solid var(--line);
+  border-radius:4px 10px 10px 4px; margin:0 1px; vertical-align:middle}
+.pgart:first-of-type{border-radius:10px 4px 4px 10px}
+
+/* nearby sync */
+.code-box{width:100%; font-family:ui-monospace, SFMono-Regular, monospace; font-size:11px; border:1px solid var(--line);
+  border-radius:11px; padding:10px; margin-top:10px; word-break:break-all; resize:none; background:var(--paper)}
+
 /* corner pills — siblings' shelves side by side */
 .corner-pills{display:flex; gap:8px; flex-wrap:wrap; margin:-4px 0 14px}
 .corner-pill{border:1px solid var(--line); background:#fff; color:var(--soft); font-size:13px; font-weight:500;
