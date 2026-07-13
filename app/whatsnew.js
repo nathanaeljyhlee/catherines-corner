@@ -29,9 +29,9 @@
         },
         {
           art: '✨',
-          sub: 'you are here',
+          sub: 'you are here — and you can always come back',
           title: 'This screen',
-          text: 'After every update, the ✨ badge up top brings you here — a plain walkthrough of what changed, so nothing new hides from you.',
+          text: 'After every update, the ✨ badge up top brings you here. Want it again later? Tap the version number at the very bottom of any screen, or “What’s new lately” on the grown-up home.',
         },
       ],
     },

@@ -497,6 +497,19 @@ async function enterPin(page, digits) {
   await page.click('.back');
   await page.waitForSelector('.shelf-head');   // kid mode → back to the shelf
   assert(!(await page.$('#newbadge')), 'badge gone once the walkthrough was seen');
+  // …but the walkthrough stays reachable: footer version link (any mode)…
+  await page.click('#vlink');
+  await page.waitForSelector('h1:has-text("What’s new")');
+  await page.click('.back');
+  await page.waitForSelector('.shelf-head');
+  // …and the permanent link on the grown-up home
+  await page.click('#gate'); await enterPin(page, '1234');
+  await page.waitForSelector('#wnlink');
+  await page.click('#wnlink');
+  await page.waitForSelector('h1:has-text("What’s new")');
+  await page.click('.back');   // adult mode → back to grown-up home
+  await page.waitForSelector('.home-grid');
+  await page.click('#to-kid'); // restore kid mode for the next steps
 
   step('NEARBY SYNC: two devices pair by hand-carried codes and merge over the wire');
   const ctxG = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['microphone'] });

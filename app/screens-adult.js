@@ -191,10 +191,12 @@
     const helpLine = el(
       '<p class="hint" style="margin-top:14px">🎙 Someone already recorded a voice memo on their phone? <a href="#" id="memohelp">Here’s how to bring it in</a>.' +
       '<br>👧 Reading to more than one child? <a href="#" id="cornerslink">Every child can have their own corner</a>.' +
-      '<br>📊 Curious (or the maker asked)? <a href="#" id="usagelink">What gets used</a> — counts only, kept on this device.</p>');
+      '<br>📊 Curious (or the maker asked)? <a href="#" id="usagelink">What gets used</a> — counts only, kept on this device.' +
+      '<br>✨ <a href="#" id="wnlink">What’s new lately</a> — the walkthrough is always here, not just after an update.</p>');
     helpLine.querySelector('#memohelp').onclick = e => { e.preventDefault(); go('memoHelp'); };
     helpLine.querySelector('#cornerslink').onclick = e => { e.preventDefault(); go('corners'); };
     helpLine.querySelector('#usagelink').onclick = e => { e.preventDefault(); go('usage'); };
+    helpLine.querySelector('#wnlink').onclick = e => { e.preventDefault(); go('whatsnew'); };
     root.appendChild(helpLine);
   });
 
