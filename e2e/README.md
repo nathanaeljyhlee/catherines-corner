@@ -30,6 +30,9 @@ owner journey plus the seams that history shows break quietly:
 - **nearby sync**: a real two-device WebRTC merge over loopback — pairing by
   hand-carried codes, lossless both-ways merge (counts add up exactly),
   synced audio plays on the receiving side, and a repeat sync carries nothing
+- **self-update**: a service-worker-controlled page notices a newly published
+  release, reloads itself while idle, and IndexedDB survives untouched;
+  auto-update holds back while an unsaved draft exists
 - **parcels**: a full two-family exchange — family A packs a book addressed
   to family B's Corner ID, B accepts (reader merged once, readings marked
   new, spread playback works), re-accepting adds nothing, and a mis-addressed
