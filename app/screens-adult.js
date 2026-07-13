@@ -1,0 +1,675 @@
+/* Catherine's Corner — grown-up mode.
+   The PIN gate, setup, home, corners (one shelf per child), the library,
+   the people who read, book requests, the voice-memo guide, and Keep it safe. */
+
+(function () {
+  'use strict';
+
+  const { el, esc, fmt, toast, avatar, blobURL, dropURL, clearURLCache, AV_COLORS } = UI;
+  const { S, go, register, render } = App;
+
+  // =========================================================
+  // PIN GATE (lazy — set on first exit from kid mode)
+  // =========================================================
+  register('pin', async function pinScreen(root) {
+    const savedPin = await DB.settings.get('pin');
+    const creating = !savedPin;
+    let entered = '', firstPass = null;
+
+    const wrap = el(
+      '<div class="pinwrap card">' +
+      '<div class="kicker">for grown-ups</div>' +
+      '<h1 class="screen-title" id="pt" style="font-size:22px">' + (creating ? 'Choose a grown-up code' : 'Grown-up code') + '</h1>' +
+      '<p class="hint" id="ph">' + (creating
+        ? 'Four digits. It keeps little fingers out of the settings — nothing more. It works on <b>this device only</b>: family using their own phone or tablet choose their own code there.'
+        : 'Enter the four-digit code for this device.') + '</p>' +
+      '<div class="pin-dots" id="dots">' + '<i></i>'.repeat(4) + '</div>' +
+      '<div class="pinpad" id="pad"></div>' +
+      '<div class="pin-err" id="err"></div>' +
+      (creating ? '' : '<button class="gate-link" id="forgot" style="margin-top:12px">I forgot the code</button>') +
+      '<button class="back" id="back" style="display:block; margin:14px auto 0">‹ back to the shelf</button>' +
+      '</div>');
+    root.appendChild(wrap);
+    wrap.querySelector('#back').onclick = () => { S.mode = 'kid'; go('shelf'); };
+
+    // Forgot-the-code escape: the code is a kid-gate, not a lock. A quick
+    // grown-up check clears it so a new one can be chosen — recordings untouched.
+    const forgotBtn = wrap.querySelector('#forgot');
+    if (forgotBtn) forgotBtn.onclick = () => {
+      const a = 3 + Math.floor(Math.random() * 7), b = 3 + Math.floor(Math.random() * 7);
+      wrap.innerHTML = '';
+      wrap.appendChild(el(
+        '<div><div class="kicker">a quick grown-up check</div>' +
+        '<h1 class="screen-title" style="font-size:22px">What is ' + a + ' × ' + b + '?</h1>' +
+        '<p class="hint">The code only keeps little fingers out — a grown-up can always reset it. Everything on the shelf stays exactly as it is.</p>' +
+        '<div class="field" style="margin-top:14px"><input type="number" id="ans" inputmode="numeric" placeholder="your answer"></div>' +
+        '<div class="pin-err" id="ferr"></div>' +
+        '<div class="btn-row"><button class="btn primary" id="chk">That’s my answer</button>' +
+        '<button class="btn ghost" id="fback">never mind</button></div></div>'));
+      wrap.querySelector('#chk').onclick = async () => {
+        if (parseInt(wrap.querySelector('#ans').value, 10) === a * b) {
+          await DB.settings.set('pin', null);
+          toast('Code cleared — choose a new one.');
+          go('pin');
+        } else {
+          wrap.querySelector('#ferr').textContent = 'Not quite — try again.';
+        }
+      };
+      wrap.querySelector('#fback').onclick = () => go('pin');
+    };
+
+    const pad = wrap.querySelector('#pad');
+    for (const k of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫']) {
+      const b = el('<button' + (k === '' ? ' disabled style="visibility:hidden"' : '') + '>' + k + '</button>');
+      b.onclick = () => key(k);
+      pad.appendChild(b);
+    }
+    function paint() {
+      wrap.querySelectorAll('#dots i').forEach((d, i) => d.classList.toggle('on', i < entered.length));
+    }
+    async function enterAdult() {
+      S.mode = 'adult';
+      const corner = await DB.corners.active();
+      go(corner ? 'home' : 'setup');
+    }
+    async function key(k) {
+      wrap.querySelector('#err').textContent = '';
+      if (k === '⌫') { entered = entered.slice(0, -1); return paint(); }
+      if (entered.length >= 4) return;
+      entered += k; paint();
+      if (entered.length < 4) return;
+      if (creating) {
+        if (firstPass === null) {
+          firstPass = entered; entered = ''; paint();
+          wrap.querySelector('#pt').textContent = 'Once more to be sure';
+          wrap.querySelector('#ph').textContent = 'Type the same four digits again.';
+        } else if (entered === firstPass) {
+          await DB.settings.set('pin', entered);
+          await enterAdult();
+        } else {
+          firstPass = null; entered = ''; paint();
+          wrap.querySelector('#pt').textContent = 'Choose a grown-up code';
+          wrap.querySelector('#err').textContent = 'Those didn’t match — start again.';
+        }
+      } else if (entered === savedPin) {
+        await enterAdult();
+      } else {
+        entered = ''; paint();
+        wrap.querySelector('#err').textContent = 'That’s not it — try again.';
+      }
+    }
+  });
+
+  // =========================================================
+  // SETUP — the first corner
+  // =========================================================
+  register('setup', async function adultSetup(root) {
+    root.appendChild(el(
+      '<div class="kicker">first things first</div>' +
+      '<h1 class="screen-title">Whose corner is this?</h1>' +
+      '<p class="screen-sub">One child, one corner. Their shelf, the voices they love. (More children can get their own corners later.)</p>'));
+    const card = el(
+      '<div class="card"><div class="field"><label>The child’s name</label>' +
+      '<input type="text" id="nm" placeholder="e.g. Mei" maxlength="30"></div>' +
+      '<button class="btn primary big" id="save">Make the corner</button>' +
+      '<p class="hint" style="margin-top:12px">Moving from another device? Make the corner, then restore your backup under “Keep it safe.”</p></div>');
+    root.appendChild(card);
+    card.querySelector('#save').onclick = async () => {
+      const v = card.querySelector('#nm').value.trim();
+      if (!v) return toast('A name makes it theirs.');
+      const corner = { id: DB.uid(), name: v, createdAt: Date.now() };
+      await DB.corners.save(corner);
+      await DB.corners.setActive(corner.id);
+      go('home');
+    };
+  });
+
+  // =========================================================
+  // GROWN-UP HOME
+  // =========================================================
+  register('home', async function adultHome(root, ctx) {
+    const cornerId = ctx.corner ? ctx.corner.id : null;
+    const [readers, books, requests, readings] = await Promise.all([
+      DB.readers.all(), DB.books.all(cornerId), DB.requests.all(cornerId), DB.readings.all(cornerId),
+    ]);
+    const open = requests.filter(r => r.status === 'open');
+    const since = (await DB.settings.get('readingsSinceBackup')) || 0;
+    const lastBackup = await DB.settings.get('lastBackupAt');
+    const safetyDesc = since >= 1
+      ? since + ' reading' + (since === 1 ? '' : 's') + ' not backed up yet'
+      : lastBackup ? 'Backed up ' + new Date(lastBackup).toLocaleDateString() : 'Download everything as one file';
+    root.appendChild(el(
+      '<div class="kicker">' + esc(ctx.cornerName || 'the corner') +
+      (ctx.corners.length > 1 ? ' · <button class="linklike" id="sw">switch corner</button>' : '') + '</div>' +
+      '<h1 class="screen-title">What would you like to do?</h1>'));
+    if (ctx.corners.length > 1) root.querySelector('#sw').onclick = () => go('corners');
+
+    if (S.shared) {
+      const sh = el(
+        '<button class="home-card" style="border-color:var(--warm); background:var(--highlight)">' +
+        '<span class="ic">🎙</span><span class="t">A recording arrived</span>' +
+        '<span class="d">“' + esc(S.shared.name) + '” was shared from another app — turn it into a reading now. (It isn’t saved until you do.)</span></button>');
+      sh.onclick = async () => {
+        const got = await App.consumeShared();
+        if (!got || !got.duration) return toast('That file couldn’t be read as audio.');
+        App.startRecordFlow({ audioBlob: got.blob, duration: got.duration, imported: true });
+      };
+      root.appendChild(sh);
+    }
+
+    const grid = el('<div class="home-grid"></div>');
+    const cards = [
+      ['record', '🎙️', 'Record a reading', 'Just read — pages come after. Or import a recording you already have.'],
+      ['books', '📚', 'The library', books.length + ' book' + (books.length === 1 ? '' : 's') + ' · ' + readings.length + ' reading' + (readings.length === 1 ? '' : 's')],
+      ['readers', '👥', 'The people who read', readers.length ? readers.map(r => r.name).join(', ') : 'Add the people who read to ' + esc(ctx.cornerName || 'your child')],
+      ['requests', '📬', 'Book requests', open.length ? open.length + ' open request' + (open.length === 1 ? '' : 's') : 'Ask someone to read a favorite'],
+      ['safety', '🗄️', 'Keep it safe', safetyDesc],
+    ];
+    for (const [id, ic, t, d] of cards) {
+      const c = el('<button class="home-card"><span class="ic">' + ic + '</span><span class="t">' + t + '</span><span class="d">' + d + '</span></button>');
+      if (id === 'safety' && since >= 3) c.style.borderColor = 'var(--warm)';
+      c.onclick = () => {
+        if (id === 'record') App.startRecordFlow();
+        else go(id);
+      };
+      grid.appendChild(c);
+    }
+    root.appendChild(grid);
+
+    // Before the first reading exists, the far-away option is easy to miss
+    // three levels deep — surface it right where the journey starts.
+    if (!readings.length) {
+      const inv = el(
+        '<button class="home-card" id="invite" style="margin-top:12px; width:100%; border-color:var(--warm); background:var(--highlight)">' +
+        '<span class="ic">💌</span><span class="t">Someone far away can read the first one</span>' +
+        '<span class="d">Send a book request to Grandma, Papa — anyone who loves ' + esc(ctx.cornerName || 'your child') + '. The request carries a link where they can record right away; you tuck what comes back onto the shelf.</span></button>');
+      inv.onclick = () => go('requests');
+      root.appendChild(inv);
+    }
+
+    const helpLine = el(
+      '<p class="hint" style="margin-top:14px">🎙 Someone already recorded a voice memo on their phone? <a href="#" id="memohelp">Here’s how to bring it in</a>.' +
+      '<br>👧 Reading to more than one child? <a href="#" id="cornerslink">Every child can have their own corner</a>.</p>');
+    helpLine.querySelector('#memohelp').onclick = e => { e.preventDefault(); go('memoHelp'); };
+    helpLine.querySelector('#cornerslink').onclick = e => { e.preventDefault(); go('corners'); };
+    root.appendChild(helpLine);
+  });
+
+  // =========================================================
+  // CORNERS — one shelf per child, on the same device
+  // =========================================================
+  register('corners', async function adultCorners(root, ctx) {
+    const [corners, readings, books] = await Promise.all([DB.corners.all(), DB.readings.all(), DB.books.all()]);
+    root.appendChild(el(
+      '<h1 class="screen-title">Corners</h1>' +
+      '<p class="screen-sub">Each child gets their own corner: their shelf, their books, their requests. The people who read are shared — Grandma reads to everyone.</p>'));
+
+    const stack = el('<div class="stack"></div>');
+    for (const c of corners.sort((a, b) => a.createdAt - b.createdAt)) {
+      const n = readings.filter(r => r.cornerId === c.id).length;
+      const nb = books.filter(b => b.cornerId === c.id).length;
+      const active = ctx.corner && ctx.corner.id === c.id;
+      const row = el(
+        '<div class="rowitem"><span class="av" style="background:var(--accent)">' + esc((c.name || '?')[0].toUpperCase()) + '</span>' +
+        '<div class="grow"><div class="t">' + esc(c.name) + (active ? ' <span class="chip open">shelf showing</span>' : '') + '</div>' +
+        '<div class="d">' + nb + ' book' + (nb === 1 ? '' : 's') + ' · ' + n + ' reading' + (n === 1 ? '' : 's') + '</div></div>' +
+        (active ? '' : '<button class="btn" data-sw>show this shelf</button>') +
+        '<button class="btn" data-rn>rename</button>' +
+        (n || nb || corners.length === 1 ? '' : '<button class="btn danger" data-x>remove</button>') +
+        '</div>');
+      const sw = row.querySelector('[data-sw]');
+      if (sw) sw.onclick = async () => { await DB.corners.setActive(c.id); render(); };
+      row.querySelector('[data-rn]').onclick = async () => {
+        const v = prompt('This corner belongs to…', c.name);
+        if (v && v.trim()) { c.name = v.trim().slice(0, 30); await DB.corners.save(c); render(); }
+      };
+      const x = row.querySelector('[data-x]');
+      if (x) x.onclick = async () => { await DB.corners.remove(c.id); render(); };
+      stack.appendChild(row);
+    }
+    root.appendChild(stack);
+
+    const card = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">another child</div>' +
+      '<div class="field" style="margin-top:10px"><label>Their name</label><input type="text" id="nm" placeholder="e.g. Theo" maxlength="30"></div>' +
+      '<button class="btn primary" id="add">Make their corner</button></div>');
+    root.appendChild(card);
+    card.querySelector('#add').onclick = async () => {
+      const v = card.querySelector('#nm').value.trim();
+      if (!v) return toast('A name makes it theirs.');
+      const corner = { id: DB.uid(), name: v, createdAt: Date.now() };
+      await DB.corners.save(corner);
+      await DB.corners.setActive(corner.id);
+      toast(v + '’s corner is ready — their shelf is showing now.');
+      go('home');
+    };
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
+  });
+
+  // =========================================================
+  // VOICE-MEMO GUIDE — how a memo becomes a reading, per platform
+  // =========================================================
+  register('memoHelp', async function memoHelp(root) {
+    const isIOS = UI.IS_IOS;
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+    root.appendChild(el(
+      '<h1 class="screen-title">Bringing a voice memo in</h1>' +
+      '<p class="screen-sub">A recording made anywhere — Grandma’s Voice Memos, any recorder app — can become a reading here. The steps depend on the phone.</p>'));
+
+    const stepCard = (kicker, title, steps, note) => el(
+      '<div class="card" style="margin-bottom:14px"><div class="kicker">' + kicker + '</div>' +
+      '<h2 class="serif" style="font-size:19px; font-weight:600; margin-top:6px">' + title + '</h2>' +
+      '<div class="stack" style="margin-top:12px">' +
+      steps.map((s, i) =>
+        '<div class="rowitem"><span class="av" style="background:var(--accent); width:26px; height:26px; font-size:13px">' + (i + 1) + '</span>' +
+        '<div class="grow"><div class="d" style="font-size:13.5px; color:var(--ink)">' + s + '</div></div></div>').join('') +
+      '</div>' + (note ? '<p class="hint" style="margin-top:10px">' + note + '</p>' : '') + '</div>');
+
+    const installCard = stepCard('first, once per device', 'Put Catherine’s Corner on the home screen',
+      isIOS
+        ? ['In <b>Safari</b>, tap the share button <b>⎋</b> (the square with the arrow).',
+           'Scroll down and tap <b>Add to Home Screen</b>, then <b>Add</b>.']
+        : ['In <b>Chrome</b>, tap the <b>⋮</b> menu (top right).',
+           'Tap <b>Add to home screen</b> (or <b>Install app</b>), then confirm.'],
+      isIOS
+        ? 'This protects the recordings from Safari’s storage clean-ups.'
+        : 'This is the step that adds <b>Catherine’s Corner to the phone’s share menu</b> — without it, the share option below won’t appear.');
+    if (standalone) installCard.querySelector('.kicker').textContent = 'already done on this device ✓';
+
+    const iosCard = stepCard('on iPhone', 'Voice Memos → Files → here',
+      ['In <b>Voice Memos</b>, open the recording and tap <b>⋯</b> (or select it and tap the share button).',
+       'Tap <b>Share</b> → <b>Save to Files</b> and pick any folder. <i>(Voice Memos don’t appear in Files until you do this — that’s an Apple thing, not yours.)</i>',
+       'Back here: <b>for grown-ups → Record a reading</b>, pick who’s reading and the book.',
+       'On the “read &amp; record” step, tap <b>⤓ Import audio</b> → <b>Choose Files</b> → pick the memo.'],
+      'iPhones don’t let web apps into the share menu yet, so Files is the bridge.');
+
+    const androidCard = stepCard('on Android', 'Share straight to Catherine’s Corner',
+      ['In the recorder app, tap <b>Share</b> on the recording.',
+       'Pick <b>Catherine’s Corner</b> in the share menu <i>(appears after the home-screen step above)</i>.',
+       'The app opens; go to <b>for grown-ups</b> — a “recording arrived” card is waiting.',
+       'Tap it, pick who’s reading and the book, and it goes straight to lining up the pages.'],
+      null);
+
+    root.appendChild(installCard);
+    if (isIOS) { root.appendChild(iosCard); root.appendChild(androidCard); }
+    else { root.appendChild(androidCard); root.appendChild(iosCard); }
+
+    const backTo = S.params.returnTo === 'requests' ? 'requests' : 'home';
+    const back = el('<button class="back">' + (backTo === 'requests' ? '‹ book requests' : '‹ grown-up home') + '</button>');
+    back.onclick = () => go(backTo);
+    root.appendChild(back);
+  });
+
+  // =========================================================
+  // KEEP IT SAFE — backup & restore
+  // =========================================================
+  register('safety', async function adultSafety(root) {
+    const [readings, lastBackup] = await Promise.all([DB.readings.all(), DB.settings.get('lastBackupAt')]);
+    root.appendChild(el(
+      '<h1 class="screen-title">Keep it safe</h1>' +
+      '<p class="screen-sub">Everything lives on this device. A backup puts the whole corner — every child’s shelf, every voice, every page — into one plain zip file you can keep anywhere and open with anything, even without this app.</p>'));
+
+    const card = el(
+      '<div class="card"><div class="kicker">back up</div>' +
+      '<p class="hint" style="margin-top:8px">' + readings.length + ' reading' + (readings.length === 1 ? '' : 's') + ' on this device' +
+      (lastBackup ? ' · last backup ' + new Date(lastBackup).toLocaleDateString() : ' · never backed up') + '</p>' +
+      '<div class="btn-row"><button class="btn primary big" id="backup" ' + (readings.length ? '' : 'disabled') + '>⤓ Back up everything</button></div></div>');
+    root.appendChild(card);
+    card.querySelector('#backup').onclick = async () => {
+      const btn = card.querySelector('#backup');
+      btn.disabled = true; btn.textContent = 'Packing the corner…';
+      try {
+        const blob = await Backup.exportAll();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'catherines-corner-backup-' + new Date().toISOString().slice(0, 10) + '.zip';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+        await DB.settings.set('lastBackupAt', Date.now());
+        await DB.settings.set('readingsSinceBackup', 0);
+        toast('Backed up — keep that file somewhere safe.');
+        render();
+      } catch (err) {
+        toast('Backup didn’t finish: ' + err.message);
+        btn.disabled = false; btn.textContent = '⤓ Back up everything';
+      }
+    };
+
+    const rcard = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">restore</div>' +
+      '<p class="hint" style="margin-top:8px">Bring a backup file from this or another device. Restoring adds to what’s here — it never deletes anything.</p>' +
+      '<div class="btn-row"><span class="btn filebtn">⤒ Restore a backup<input type="file" id="restorefile" accept=".zip,application/zip"></span></div></div>');
+    root.appendChild(rcard);
+    rcard.querySelector('#restorefile').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      try {
+        const counts = await Backup.importFile(f);
+        clearURLCache();
+        toast('Restored ' + counts.readings + ' reading' + (counts.readings === 1 ? '' : 's') + ', ' +
+          counts.books + ' book' + (counts.books === 1 ? '' : 's') + ', ' + counts.readers + ' reader' + (counts.readers === 1 ? '' : 's') + '.');
+        render();
+      } catch (err) {
+        toast(err.message || 'That file couldn’t be restored.');
+      }
+    };
+
+    root.appendChild(el(
+      '<p class="hint" style="margin-top:14px">New phone, or lending it to family? <a href="check.html">Run the 30-second device check</a> to make sure recording and storage behave there.</p>'));
+
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
+  });
+
+  // =========================================================
+  // THE PEOPLE WHO READ (shared across every corner)
+  // =========================================================
+  register('readers', async function adultReaders(root) {
+    const readers = await DB.readers.all();
+    root.appendChild(el(
+      '<h1 class="screen-title">The people who read</h1>' +
+      '<p class="screen-sub">Only people you add here can record. No strangers, ever. Everyone here can read to every child on this device.</p>'));
+    const stack = el('<div class="stack"></div>');
+    for (const r of readers) {
+      const contact = [r.email, r.phone].filter(Boolean).join(' · ');
+      const row = el(
+        '<div class="rowitem">' + avatar(r) +
+        '<div class="grow"><div class="t">' + esc(r.name) + '</div><div class="d">' + esc(r.relationship || '') + (contact ? ' · ' + esc(contact) : '') + '</div></div>' +
+        '<button class="btn" data-c title="email & phone — used to send book requests">✉️ contact</button>' +
+        '<button class="btn danger" data-x>remove</button></div>');
+      row.querySelector('[data-c]').onclick = async () => {
+        const em = prompt('Email for ' + r.name + '? (used to send book requests — leave blank for none)', r.email || '');
+        if (em !== null) r.email = em.trim() || null;
+        const ph = prompt('Phone number for ' + r.name + '? (used to text book requests — leave blank for none)', r.phone || '');
+        if (ph !== null) r.phone = ph.trim() || null;
+        if (em !== null || ph !== null) { await DB.readers.save(r); render(); }
+      };
+      row.querySelector('[data-x]').onclick = async () => {
+        const rs = (await DB.readings.all()).filter(x => x.readerId === r.id);
+        if (rs.length) return toast(r.name + ' has recordings on the shelf — those stay; remove them first.');
+        await DB.readers.remove(r.id); render();
+      };
+      stack.appendChild(row);
+    }
+    root.appendChild(stack);
+
+    const card = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">add someone</div>' +
+      '<div class="field" style="margin-top:10px"><label>Name</label><input type="text" id="nm" placeholder="e.g. Grandma Rose"></div>' +
+      '<div class="field"><label>Who they are to the child</label><input type="text" id="rel" placeholder="e.g. Grandma"></div>' +
+      '<div class="field"><label>Email (optional — so book requests can be emailed to them)</label><input type="email" id="em" placeholder="e.g. rose@example.com"></div>' +
+      '<div class="field"><label>Phone (optional — so book requests can be texted to them)</label><input type="tel" id="ph" placeholder="e.g. +1 555 010 1234"></div>' +
+      '<button class="btn primary" id="add">Add reader</button></div>');
+    root.appendChild(card);
+    card.querySelector('#add').onclick = async () => {
+      const name = card.querySelector('#nm').value.trim();
+      if (!name) return toast('A name, so the child knows whose voice it is.');
+      await DB.readers.save({
+        id: DB.uid(), name, relationship: card.querySelector('#rel').value.trim(),
+        email: card.querySelector('#em').value.trim() || null,
+        phone: card.querySelector('#ph').value.trim() || null,
+        color: AV_COLORS[(await DB.readers.all()).length % AV_COLORS.length], createdAt: Date.now(),
+      });
+      render();
+    };
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
+  });
+
+  // =========================================================
+  // THE LIBRARY
+  // =========================================================
+  register('books', async function adultBooks(root, ctx) {
+    const cornerId = ctx.corner ? ctx.corner.id : null;
+    const books = await DB.books.all(cornerId);
+    const readings = await DB.readings.all(cornerId);
+    const told = readings.filter(r => !r.bookId);
+    root.appendChild(el(
+      '<h1 class="screen-title">The library</h1>' +
+      '<p class="screen-sub">Your own books — photograph the copy you actually own, crayon marks and all.</p>'));
+    const stack = el('<div class="stack"></div>');
+    for (const b of books) {
+      const n = readings.filter(r => r.bookId === b.id).length;
+      const cover = b.cover ? '<img class="thumb" alt="" src="' + blobURL('cover-' + b.id, b.cover) + '">' : '<span class="chip">no cover</span>';
+      const row = el(
+        '<button class="rowitem">' + cover +
+        '<div class="grow"><div class="t">' + esc(b.title) + '</div>' +
+        '<div class="d">' + n + ' reading' + (n === 1 ? '' : 's') + ' · ' + (b.pages || []).length +
+        (b.pageFormat === 'spread' ? ' spread photo' : ' page photo') + ((b.pages || []).length === 1 ? '' : 's') + '</div></div>' +
+        '<span class="chev">›</span></button>');
+      row.onclick = () => go('bookDetail', { bookId: b.id });
+      stack.appendChild(row);
+    }
+    if (told.length) {
+      const readers = await DB.readers.all();
+      for (const st of told) {
+        const rd = readers.find(r => r.id === st.readerId);
+        const row = el(
+          '<div class="rowitem"><span class="chip">🌙 told story</span>' +
+          '<div class="grow"><div class="t">' + esc(st.title || 'A bedtime story') + '</div>' +
+          '<div class="d">told by ' + esc(rd ? rd.name : '') + ' · ' + fmt(st.duration || 0) + '</div></div>' +
+          '<button class="btn" data-ed title="adjust the gentle skips">✎ edit</button></div>');
+        row.querySelector('[data-ed]').onclick = () => App.startEditFlow(st);
+        stack.appendChild(row);
+      }
+    }
+    if (!books.length && !told.length) stack.appendChild(el('<div class="empty"><div class="big">📖</div>No books yet.</div>'));
+    root.appendChild(stack);
+
+    const row = el('<div class="btn-row"><button class="btn primary" id="add">📷 Add a book</button></div>');
+    root.appendChild(row);
+    row.querySelector('#add').onclick = () => go('addBook');
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
+  });
+
+  register('addBook', async function adultAddBook(root, ctx) {
+    root.appendChild(el(
+      '<h1 class="screen-title">Add a new book</h1>' +
+      '<p class="screen-sub">Photograph the cover of your own copy — we never pull book art from the internet.</p>'));
+    let coverFile = null;
+    const card = el(
+      '<div class="card">' +
+      '<div class="field"><label>Cover photo</label>' +
+      '<span class="btn filebtn" id="cvbtn">📷 Photograph the cover<input type="file" id="cv" accept="image/*" capture="environment"></span>' +
+      '<span class="hint" id="cvname">You can also add it later — or let your child design one (🖍️ on the book’s page).</span></div>' +
+      '<div class="field"><label>Title</label><input type="text" id="ti" placeholder="e.g. Goodnight, Little Bear"></div>' +
+      '<div class="btn-row"><button class="btn primary" id="save">Add to the library</button>' +
+      '<button class="btn" id="design">🖍️ Design the cover instead</button></div></div>');
+    root.appendChild(card);
+    card.querySelector('#cv').onchange = e => {
+      coverFile = e.target.files[0] || null;
+      card.querySelector('#cvname').textContent = coverFile ? coverFile.name : 'You can also add it later — or let your child design one (🖍️ on the book’s page).';
+    };
+    async function createBook() {
+      const title = card.querySelector('#ti').value.trim();
+      if (!title) { toast('Every book needs its title.'); return null; }
+      const b = {
+        id: DB.uid(), title, cover: coverFile || null, pages: [], pageFormat: 'single',
+        cornerId: ctx.corner ? ctx.corner.id : null, createdAt: Date.now(),
+      };
+      await DB.books.save(b);
+      return b;
+    }
+    card.querySelector('#save').onclick = async () => {
+      const b = await createBook();
+      if (!b) return;
+      toast('“' + b.title + '” is on the shelf.');
+      // land where the features are: back into the record flow if we came from
+      // there, otherwise the book's own page (record / import / ask / design).
+      if (S.params.returnTo === 'recWhat') go('recWhat');
+      else go('bookDetail', { bookId: b.id });
+    };
+    card.querySelector('#design').onclick = async () => {
+      const b = await createBook();
+      if (!b) return;
+      go('studio', { bookId: b.id, returnTo: S.params.returnTo === 'recWhat' ? 'recWhat' : null });
+    };
+    const back = el('<button class="back">‹ the library</button>');
+    back.onclick = () => go('books');
+    root.appendChild(back);
+  });
+
+  register('bookDetail', async function adultBookDetail(root) {
+    const book = await DB.books.get(S.params.bookId);
+    if (!book) return go('books');
+    const readings = await DB.readings.forBook(book.id);
+    const readers = await DB.readers.all();
+    root.appendChild(el(
+      '<h1 class="screen-title">' + esc(book.title) + '</h1>' +
+      '<p class="screen-sub">' + (book.pages || []).length +
+      (book.pageFormat === 'spread' ? ' two-page spread photos' : ' page photos') +
+      ' · pages belong to the book, so every new voice reuses them.</p>'));
+
+    const stack = el('<div class="stack"></div>');
+    for (const r of readings.sort((a, b) => (a.episodeIndex ?? 0) - (b.episodeIndex ?? 0))) {
+      const rd = readers.find(x => x.id === r.readerId);
+      const label = (r.episodeIndex != null ? 'Chapter ' + r.episodeIndex + (r.title ? ' · ' + r.title : '') : 'The whole book');
+      const row = el(
+        '<div class="rowitem stacked">' +
+        '<div class="rowhead">' + avatar(rd) +
+        '<div class="grow"><div class="t">' + esc(label) + '</div>' +
+        '<div class="d">' + esc(rd ? rd.name : '') + ' · ' + fmt(r.duration || 0) +
+        ((r.skipRanges || []).length ? ' · ' + r.skipRanges.length + ' gentle skip' + (r.skipRanges.length > 1 ? 's' : '') : '') + '</div></div></div>' +
+        '<div class="btn-row rowbtns">' +
+        '<button class="btn" data-ed title="adjust the pages, turns and skips">✎ edit</button>' +
+        '<button class="btn" data-dl>⤓ keep a copy</button>' +
+        '<button class="btn" data-vx>🎞 video</button>' +
+        '<button class="btn danger" data-x>delete</button></div></div>');
+      row.querySelector('[data-ed]').onclick = () => App.startEditFlow(r);
+      row.querySelector('[data-dl]').onclick = async () => {
+        const audioBlob = await DB.audio.get(r.id);
+        if (!audioBlob) return toast('This reading’s sound couldn’t be found on this device.');
+        const a = document.createElement('a');
+        a.href = blobURL('aud-' + r.id, audioBlob);
+        const ext = Backup.audioExt(audioBlob.type);
+        a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + ext).replace(/[/\\?%*:|"<>]/g, '-');
+        a.click();
+      };
+      row.querySelector('[data-vx]').onclick = async e => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const audioBlob = await DB.audio.get(r.id);
+          if (!audioBlob) throw new Error('no audio on this device');
+          const out = await VideoExport.exportReading({
+            reading: r, audioBlob, book, reader: rd,
+            onProgress: p => { btn.textContent = '🎞 ' + Math.round(p * 100) + '%'; },
+          });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(out.blob);
+          a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + out.ext).replace(/[/\\?%*:|"<>]/g, '-');
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+          toast('Video ready — pages and voice in one file to share.');
+        } catch (err) {
+          toast('Video export didn’t finish: ' + (err && err.message || err));
+        }
+        btn.disabled = false;
+        btn.textContent = '🎞 video';
+      };
+      row.querySelector('[data-x]').onclick = async () => {
+        if (!confirm('Delete this reading? The voice recording cannot be brought back.')) return;
+        await DB.readings.remove(r.id); dropURL('aud-' + r.id); render();
+      };
+      stack.appendChild(row);
+    }
+    if (!readings.length) stack.appendChild(el('<div class="empty">No readings of this book yet.</div>'));
+    root.appendChild(stack);
+
+    const row = el(
+      '<div class="btn-row">' +
+      '<button class="btn primary" id="rec">🎙️ Record this book</button>' +
+      '<button class="btn" id="ask">📬 Ask someone to read it</button>' +
+      '<button class="btn" id="art">🖍️ Design a colorful cover</button>' +
+      '</div>');
+    root.appendChild(row);
+    row.querySelector('#rec').onclick = () => App.startRecordFlow({ bookId: book.id });
+    row.querySelector('#ask').onclick = () => go('requests', { prefillBookId: book.id });
+    row.querySelector('#art').onclick = () => go('studio', { bookId: book.id });
+    const back = el('<button class="back">‹ the library</button>');
+    back.onclick = () => go('books');
+    root.appendChild(back);
+  });
+
+  // =========================================================
+  // BOOK REQUESTS — ask a loved one, from anywhere
+  // =========================================================
+  register('requests', async function adultRequests(root, ctx) {
+    const cornerId = ctx.corner ? ctx.corner.id : null;
+    const [requests, books, readers] = await Promise.all([DB.requests.all(cornerId), DB.books.all(cornerId), DB.readers.all()]);
+    root.appendChild(el(
+      '<h1 class="screen-title">Book requests</h1>' +
+      '<p class="screen-sub">' + esc(ctx.cornerName || 'Your child') + ' asks; a loved one records — from anywhere. The request travels with a link that shows them what it’s for and lets them record right there; when their recording comes back, bring it in and it lands on the shelf.</p>'));
+
+    const stack = el('<div class="stack"></div>');
+    for (const q of requests.sort((a, b) => b.createdAt - a.createdAt)) {
+      const rd = readers.find(r => r.id === q.readerId);
+      const bk = books.find(b => b.id === q.bookId);
+      const what = bk ? bk.title : (q.bookTitle || 'Anything they love — reader’s pick');
+      const row = el(
+        '<div class="rowitem stacked">' +
+        '<div class="rowhead"><span class="chip ' + (q.status === 'open' ? 'open' : '') + '">' + (q.status === 'open' ? 'open' : 'read ✓') + '</span>' +
+        '<div class="grow"><div class="t">' + esc(what) + '</div>' +
+        '<div class="d">asked of ' + esc(rd ? rd.name : 'anyone who loves them') + (q.note ? ' · “' + esc(q.note) + '”' : '') + '</div></div></div>' +
+        (q.status === 'open' ? '' : '<div class="btn-row rowbtns"><button class="btn danger" data-x>remove</button></div>') +
+        '</div>');
+      if (q.status === 'open') {
+        const link = Send.inviteLink({ kid: ctx.cornerName, book: bk ? bk.title : q.bookTitle, note: q.note });
+        const text = Send.requestMessage(ctx.cornerName, bk ? bk.title : q.bookTitle, q.note, link);
+        const btns = Send.sendRow(rd, 'A reading for ' + (ctx.cornerName || 'someone little'), text);
+        btns.appendChild(el('<a class="btn" href="' + esc(link) + '" target="_blank" rel="noopener" title="the page the link opens for them">👀 preview</a>'));
+        btns.appendChild(el('<button class="btn warm" data-rec>record now</button>'));
+        btns.appendChild(el('<button class="btn" data-done>mark read</button>'));
+        btns.querySelector('[data-rec]').onclick = () => App.startRecordFlow({ bookId: q.bookId, requestId: q.id, readerId: q.readerId });
+        btns.querySelector('[data-done]').onclick = async () => { q.status = 'done'; await DB.requests.save(q); render(); };
+        row.appendChild(btns);
+        // The half of the loop that lands back here: say plainly how the
+        // recording they send back becomes a reading.
+        const hint = el('<p class="hint" style="margin-top:8px">When their recording comes back, bring it in: <b>Record a reading → ⤓ Import audio</b>. <a href="#" data-guide>Step-by-step guide</a></p>');
+        hint.querySelector('[data-guide]').onclick = e => { e.preventDefault(); go('memoHelp', { returnTo: 'requests' }); };
+        row.appendChild(hint);
+      } else {
+        row.querySelector('[data-x]').onclick = async () => { await DB.requests.remove(q.id); render(); };
+      }
+      stack.appendChild(row);
+    }
+    if (!requests.length) stack.appendChild(el('<div class="empty"><div class="big">📬</div>No requests yet.</div>'));
+    root.appendChild(stack);
+
+    const card = el(
+      '<div class="card" style="margin-top:14px"><div class="kicker">ask someone to read</div>' +
+      '<div class="field" style="margin-top:10px"><label>Ask whom?</label><select id="rd"><option value="">anyone who loves them</option>' +
+      readers.map(r => '<option value="' + r.id + '"' + (S.params.prefillReaderId === r.id ? ' selected' : '') + '>' + esc(r.name) +
+        (r.email || r.phone ? '' : ' (no email or phone saved)') + '</option>').join('') + '</select>' +
+      '<span class="hint">With an email or phone saved under “The people who read,” the ✉️ and 💬 buttons address the message for you.</span></div>' +
+      '<div class="field"><label>Which book? (optional — they can pick)</label><select id="bk">' +
+      '<option value="">any book they love — their pick</option>' +
+      books.map(b => '<option value="' + b.id + '"' + (S.params.prefillBookId === b.id ? ' selected' : '') + '>' + esc(b.title) + '</option>').join('') +
+      '</select><input type="text" id="bt" placeholder="…or type a title not in the library yet" style="margin-top:8px"></div>' +
+      '<div class="field"><label>A little note (optional)</label><input type="text" id="nt" placeholder="e.g. do the bear voice!"></div>' +
+      '<button class="btn primary" id="add">Add the request</button></div>');
+    root.appendChild(card);
+    card.querySelector('#add').onclick = async () => {
+      const bookId = card.querySelector('#bk').value || null;
+      const bookTitle = card.querySelector('#bt').value.trim();
+      await DB.requests.save({
+        id: DB.uid(), bookId, bookTitle: bookId ? null : (bookTitle || null),
+        readerId: card.querySelector('#rd').value || null,
+        note: card.querySelector('#nt').value.trim(), status: 'open',
+        cornerId, createdAt: Date.now(),
+      });
+      toast('Request added — send it on its way with ✉️ or 💬.');
+      render();
+    };
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
+  });
+})();

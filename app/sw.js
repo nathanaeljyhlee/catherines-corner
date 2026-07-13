@@ -1,8 +1,10 @@
 /* Catherine's Corner service worker — offline app shell.
    Bump VERSION on every deploy so clients pick up new code. */
 
-const VERSION = 'cc-v1.6.0';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'db.js', 'backup.js', 'export.js', 'manifest.json', 'icon-180.png', 'icon-512.png', 'check.html'];
+const VERSION = 'cc-v1.7.0';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'db.js', 'ui.js', 'send.js', 'backup.js', 'export.js',
+  'screens-kid.js', 'screens-adult.js', 'screens-record.js',
+  'manifest.json', 'icon-180.png', 'icon-512.png', 'check.html'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
