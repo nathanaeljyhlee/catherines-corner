@@ -151,15 +151,23 @@
   // imported file, iOS quirks handled. Used by pass 1 and the invite page.
   // opts: { statusIdle, note (html), onAudio(blob, durationSec, imported) }
   function capturePanel(opts) {
+    // Degrade honestly where live recording isn't possible (no MediaRecorder,
+    // no mic API, or a non-HTTPS address): keep the import path front and
+    // center instead of a button that can only fail.
+    const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    const recordUI = canRecord
+      ? '<div><span class="rec-dot" id="dot"></span><span id="stat" class="hint">' + (opts.statusIdle || 'ready when you are') + '</span></div>' +
+        '<div class="rec-time" id="tm">0:00</div>' +
+        '<div class="btn-row" style="justify-content:center">' +
+        '<button class="btn warm big" id="rec">● Start recording</button>' +
+        '<button class="btn big" id="pause" style="display:none">❘❘ Pause</button>' +
+        '<button class="btn primary big" id="stop" style="display:none">■ Done reading</button>' +
+        '</div>'
+      : '<div class="hint" style="margin-bottom:6px">🎙 This browser can’t record directly' +
+        (window.isSecureContext === false ? ' (recording needs a secure https:// address)' : '') +
+        ' — record a voice memo with any recorder app, then bring it in below.</div>';
     const hero = el(
-      '<div class="rec-hero">' +
-      '<div><span class="rec-dot" id="dot"></span><span id="stat" class="hint">' + (opts.statusIdle || 'ready when you are') + '</span></div>' +
-      '<div class="rec-time" id="tm">0:00</div>' +
-      '<div class="btn-row" style="justify-content:center">' +
-      '<button class="btn warm big" id="rec">● Start recording</button>' +
-      '<button class="btn big" id="pause" style="display:none">❘❘ Pause</button>' +
-      '<button class="btn primary big" id="stop" style="display:none">■ Done reading</button>' +
-      '</div>' +
+      '<div class="rec-hero">' + recordUI +
       (opts.note ? '<p class="rec-note">' + opts.note + '</p>' : '') +
       '<div class="btn-row" style="justify-content:center">' +
       '<span class="btn filebtn" id="impbtn">⤓ Import audio<input type="file" id="imp"' +
@@ -175,7 +183,7 @@
       $tm.textContent = fmt(t);
     }
 
-    $rec.onclick = async () => {
+    if ($rec) $rec.onclick = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaRecorder = new MediaRecorder(stream);
@@ -193,10 +201,12 @@
         $dot.classList.add('live'); $stat.textContent = 'recording — just read';
         $rec.style.display = 'none'; $pause.style.display = ''; $stop.style.display = '';
       } catch (err) {
-        toast('The microphone said no — check permissions and try again.');
+        toast(err && err.name === 'NotFoundError'
+          ? 'No microphone could be found on this device — import a voice memo instead.'
+          : 'The microphone said no — check permissions and try again.');
       }
     };
-    $pause.onclick = () => {
+    if ($pause) $pause.onclick = () => {
       if (!mediaRecorder) return;
       if (mediaRecorder.state === 'recording') {
         mediaRecorder.pause();
@@ -209,7 +219,7 @@
         $pause.textContent = '❘❘ Pause';
       }
     };
-    $stop.onclick = () => {
+    if ($stop) $stop.onclick = () => {
       if (!mediaRecorder) return;
       if (mediaRecorder.state === 'paused') { /* elapsedBefore already counted */ t0 = 0; }
       else if (mediaRecorder.state === 'recording') { elapsedBefore += (Date.now() - t0) / 1000; t0 = 0; }

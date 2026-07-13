@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.7.0';
+  const APP_VERSION = '1.7.1';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -75,7 +75,27 @@
   // ---------- shell ----------
   const $app = document.getElementById('app');
 
+  // If the library can't open (blocked upgrade, private-mode storage, a bug
+  // mid-boot), say so calmly instead of a blank screen — the data itself is
+  // untouched, and reopening usually clears it.
+  function renderFailure(err) {
+    $app.innerHTML = '';
+    $app.appendChild(el(
+      '<div class="card" style="max-width:560px; margin:40px auto 0">' +
+      '<div class="kicker">a hiccup, not a loss</div>' +
+      '<h1 class="screen-title" style="font-size:22px">The app couldn’t open its library just now</h1>' +
+      '<p class="screen-sub" style="margin-bottom:10px">Everything recorded on this device is still stored — nothing is deleted. ' +
+      'Close any other Catherine’s Corner tabs, then try again.</p>' +
+      '<p class="hint">' + esc((err && err.message) || err || 'unknown error') + '</p>' +
+      '<div class="btn-row"><button class="btn primary big" id="retry">Try again</button></div></div>'));
+    $app.querySelector('#retry').onclick = () => location.reload();
+  }
+
   async function render() {
+    try { await renderInner(); } catch (err) { renderFailure(err); }
+  }
+
+  async function renderInner() {
     player.stop();
     const isGuest = !!(screenMeta[S.screen] && screenMeta[S.screen].guest);
     const [corner, corners] = isGuest ? [null, []] : await Promise.all([DB.corners.active(), DB.corners.all()]);
@@ -148,6 +168,10 @@
       return;
     }
     checkSharedInbox().finally(render);
+    // Devices already holding readings should be marked must-keep even if
+    // they saved before persistence was requested (or the browser said no
+    // once) — re-ask quietly whenever there is something worth keeping.
+    DB.readings.all().then(rs => { if (rs.length) DB.requestPersistence(); }).catch(() => {});
   });
 
   window.App = { VERSION: APP_VERSION, S, go, render, register, player, consumeShared };

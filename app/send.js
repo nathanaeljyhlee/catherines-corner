@@ -23,6 +23,14 @@
   // ---------- invite links ----------
   // The invitation is the URL: a small payload (child, book, note) rides in
   // the hash — never sent to any server — and opens the guest page below.
+  // Anyone can craft one of these links, so the payload is distrusted on the
+  // way in: every field is coerced to a clamped plain string (and rendered
+  // through esc() like everything else).
+  const strField = (v, max) => typeof v === 'string' ? v.slice(0, max) : '';
+  function sanitizeInvite(p) {
+    if (!p || typeof p !== 'object') return null;
+    return { v: 1, kid: strField(p.kid, 40), book: strField(p.book, 120), note: strField(p.note, 200) };
+  }
   function encodeInvite(payload) {
     const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
     return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -30,12 +38,11 @@
   function decodeInvite(str) {
     try {
       const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
-      const p = JSON.parse(decodeURIComponent(escape(atob(b64))));
-      return p && typeof p === 'object' ? p : null;
+      return sanitizeInvite(JSON.parse(decodeURIComponent(escape(atob(b64)))));
     } catch (e) { return null; }
   }
   function inviteLink(payload) {
-    return appURL() + '#invite=' + encodeInvite(Object.assign({ v: 1 }, payload));
+    return appURL() + '#invite=' + encodeInvite(sanitizeInvite(payload));
   }
   function inviteFromHash() {
     const m = (location.hash || '').match(/#invite=([A-Za-z0-9\-_]+)/);
@@ -72,11 +79,23 @@
       // the messages app with the message typed and ready to send.
       launchHref('sms:' + num + (IS_IOS ? '&' : '?') + 'body=' + encodeURIComponent(text));
     };
-    row.querySelector('[data-share]').onclick = async () => {
-      if (navigator.share) { try { await navigator.share({ text }); } catch (e) { /* user closed the sheet */ } }
-      else { await navigator.clipboard.writeText(text); toast('Copied — paste it into any message.'); }
-    };
+    row.querySelector('[data-share]').onclick = () => shareText(text);
     return row;
+  }
+
+  // Share sheet → clipboard → an old-fashioned copy prompt: the message
+  // always has SOME way out of the app, whatever this browser supports.
+  async function shareText(text) {
+    if (navigator.share) {
+      try { await navigator.share({ text }); return; }
+      catch (e) { if (e && e.name === 'AbortError') return; /* sheet failed — fall through */ }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Copied — paste it into any message.');
+      return;
+    } catch (e) { /* clipboard unavailable — fall through */ }
+    prompt('Copy this message:', text);
   }
 
   // =========================================================
@@ -140,11 +159,11 @@
       card.querySelector('#send').onclick = async () => {
         const file = new File([blob], fname, { type: blob.type || 'audio/webm' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          try { await navigator.share({ files: [file], text: 'A reading for ' + kid + ' 🌙' }); } catch (e) { /* sheet closed */ }
-        } else {
-          card.querySelector('#dl').click();
-          toast('Saved the file — attach it to a reply so it reaches ' + kid + '’s shelf.');
+          try { await navigator.share({ files: [file], text: 'A reading for ' + kid + ' 🌙' }); return; }
+          catch (e) { if (e && e.name === 'AbortError') return; /* sheet failed — fall back to the file */ }
         }
+        card.querySelector('#dl').click();
+        toast('Saved the file — attach it to a reply so it reaches ' + kid + '’s shelf.');
       };
       card.querySelector('#again').onclick = () => { URL.revokeObjectURL(url); showCapture(); };
     }
@@ -154,5 +173,5 @@
 
   App.register('guest', guestScreen, { guest: true });
 
-  window.Send = { appURL, siteURL, inviteLink, decodeInvite, inviteFromHash, requestMessage, sendRow };
+  window.Send = { appURL, siteURL, inviteLink, decodeInvite, inviteFromHash, requestMessage, sendRow, shareText };
 })();

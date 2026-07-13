@@ -307,10 +307,31 @@
   // KEEP IT SAFE — backup & restore
   // =========================================================
   register('safety', async function adultSafety(root) {
-    const [readings, lastBackup] = await Promise.all([DB.readings.all(), DB.settings.get('lastBackupAt')]);
+    const [readings, lastBackup, storage] = await Promise.all([
+      DB.readings.all(), DB.settings.get('lastBackupAt'), DB.storageStatus(),
+    ]);
     root.appendChild(el(
       '<h1 class="screen-title">Keep it safe</h1>' +
       '<p class="screen-sub">Everything lives on this device. A backup puts the whole corner — every child’s shelf, every voice, every page — into one plain zip file you can keep anywhere and open with anything, even without this app.</p>'));
+
+    // Say honestly how this browser is treating the data.
+    const gb = n => (n / 1073741824).toFixed(n >= 1073741824 ? 1 : 2);
+    const parts = [];
+    if (storage.persisted === true) parts.push('🛡 the browser has marked this corner as must-keep');
+    else if (storage.persisted === false) parts.push('⚠️ storage here is <b>best-effort</b> — the browser may clean it under pressure, so back up often (home-screen install helps)');
+    if (storage.usage != null && storage.quota) parts.push('about ' + gb(storage.usage) + ' GB used of the ~' + gb(storage.quota) + ' GB this browser allows');
+    if (parts.length) {
+      const line = el('<p class="hint" id="storagestatus" style="margin:-8px 0 14px">' + parts.join(' · ') +
+        (storage.persisted === false ? ' · <a href="#" id="askpersist">ask the browser to protect it</a>' : '') + '</p>');
+      const ask = line.querySelector('#askpersist');
+      if (ask) ask.onclick = async e => {
+        e.preventDefault();
+        const ok = await DB.requestPersistence();
+        toast(ok ? 'Protected — the browser will treat these recordings as must-keep.' : 'The browser didn’t agree yet — installing to the home screen usually convinces it.');
+        render();
+      };
+      root.appendChild(line);
+    }
 
     const card = el(
       '<div class="card"><div class="kicker">back up</div>' +

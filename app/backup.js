@@ -96,7 +96,14 @@
       if (method !== 0) throw new Error('This zip uses compression this app can’t read.');
       const lnLen = dv.getUint16(lho + 26, true), lxLen = dv.getUint16(lho + 28, true);
       const dataStart = lho + 30 + lnLen + lxLen;
-      out.set(name, u8.subarray(dataStart, dataStart + size));
+      const bytes = u8.subarray(dataStart, dataStart + size);
+      // Families keep these zips for years — verify every checksum, so a
+      // bit-rotted or truncated backup is refused whole instead of restoring
+      // silently corrupted voices.
+      if (crc32(bytes) !== dv.getUint32(p + 16, true)) {
+        throw new Error('This backup file is damaged (“' + name + '” fails its checksum) — nothing was changed. Try another copy of the backup.');
+      }
+      out.set(name, bytes);
       p += 46 + nLen + xLen + cLen;
     }
     return out;
@@ -187,12 +194,31 @@
     return active ? active.id : null;
   }
 
+  // Every file the manifest points at must actually be in the zip — checked
+  // BEFORE the first write, so a truncated backup can't restore readings with
+  // their voices missing.
+  function assertComplete(m, map) {
+    const missing = [];
+    for (const b of m.books || []) {
+      if (b.cover && b.cover.file && !map.has(b.cover.file)) missing.push(b.cover.file);
+      for (const p of b.pages || []) if (p.file && !map.has(p.file)) missing.push(p.file);
+    }
+    for (const r of m.readings || []) if (r.audio && r.audio.file && !map.has(r.audio.file)) missing.push(r.audio.file);
+    if (missing.length) {
+      throw new Error('This backup is incomplete — ' + missing.length + ' file' + (missing.length === 1 ? ' is' : 's are') +
+        ' missing inside the zip. Nothing was changed; try another copy of the backup.');
+    }
+  }
+
   async function importFile(file) {
     const map = parseZip(await file.arrayBuffer());
     const mf = map.get('manifest.json');
     if (!mf) throw new Error('No manifest inside — is this a Catherine’s Corner backup?');
-    const m = JSON.parse(new TextDecoder().decode(mf));
+    let m;
+    try { m = JSON.parse(new TextDecoder().decode(mf)); }
+    catch (e) { throw new Error('This backup’s manifest can’t be read — the file may be damaged. Nothing was changed.'); }
     if (m.format !== 'catherines-corner-backup') throw new Error('This isn’t a Catherine’s Corner backup.');
+    assertComplete(m, map);
     const v1 = !(m.formatVersion >= 2);
     const fallbackCornerId = v1 ? await cornerForV1(m) : null;
     const counts = { corners: 0, readers: 0, books: 0, readings: 0, requests: 0 };

@@ -13,6 +13,11 @@ owner journey plus the seams that history shows break quietly:
   twin shelves), **v1 backup import**, and the in-place **v1→v2 IndexedDB
   migration** (audio lifted out of reading rows, corner from `cornerName`)
 - told stories, the edit flow, gentle skips, calm end screen
+- **hardening cases**: a quota-failed save stays loud and lossless (draft
+  kept, no orphan rows), a corrupted backup zip is refused whole (CRC +
+  completeness checks, nothing written), a hostile invite payload renders
+  inert, a browser without MediaRecorder degrades to import-only, and a
+  broken database opens a calm failure screen instead of a blank page
 
 Run it:
 

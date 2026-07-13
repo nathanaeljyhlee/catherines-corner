@@ -330,7 +330,88 @@ async function enterPin(page, digits) {
   await page.click('#save');
   await page.waitForSelector('h1:has-text("The library")');
 
+  // ---------- hardening ----------
+  step('HARDEN: a failed save is loud and lossless (quota → draft kept, no orphan rows)');
+  await page.click('.back'); // library → home
+  await page.click('.home-card:has-text("Record a reading")');
+  await page.click('.pick:has-text("Dad")');
+  await page.click('#told');
+  await page.fill('#st', 'The Quota Story');
+  await page.click('#next');
+  await page.click('#rec'); await sleep(1200); await page.click('#stop');
+  await page.waitForSelector('#sk');
+  const countBefore = await page.evaluate(async () => (await DB.readings.all()).length);
+  await page.evaluate(() => {
+    DB.readings._origSWA = DB.readings.saveWithAudio;
+    DB.readings.saveWithAudio = () => { const e = new Error('quota'); e.name = 'QuotaExceededError'; return Promise.reject(e); };
+  });
+  await page.click('#save');
+  await page.waitForSelector('.toast.show:has-text("storage is full")');
+  assert(await page.$('h1:has-text("Pass 2")'), 'still on pass 2 — the draft is not thrown away');
+  const countMid = await page.evaluate(async () => (await DB.readings.all()).length);
+  assert(countMid === countBefore, 'no orphan reading row after the failed save');
+  await page.evaluate(() => { DB.readings.saveWithAudio = DB.readings._origSWA; });
+  await page.click('#save');
+  await page.waitForSelector('.rec-hero:has-text("reading is ready")');
+  const countAfter = await page.evaluate(async () => (await DB.readings.all()).length);
+  assert(countAfter === countBefore + 1, 'retry after freeing space saves exactly once');
+  await page.click('#home');
+
+  step('HARDEN: a corrupted backup zip is refused whole — nothing written');
+  const corrupted = fs.readFileSync(zipPath);
+  corrupted[Math.floor(corrupted.length * 0.4)] ^= 0xFF; // bit-rot one byte in an entry
+  const corruptPath = path.join(TMP, 'backup-corrupted.zip');
+  fs.writeFileSync(corruptPath, corrupted);
+  const preCounts = await page.evaluate(async () => ({
+    r: (await DB.readings.all()).length, b: (await DB.books.all()).length, c: (await DB.corners.all()).length,
+  }));
+  await page.click('.home-card:has-text("Keep it safe")');
+  await page.waitForSelector('#storagestatus'); // storage honesty line under Keep it safe
+  await page.setInputFiles('#restorefile', corruptPath);
+  await page.waitForSelector('.toast.show');
+  const corruptToast = await page.textContent('.toast');
+  assert(/damaged|checksum|zip/i.test(corruptToast), 'corrupted zip called out honestly (got: ' + corruptToast + ')');
+  const postCounts = await page.evaluate(async () => ({
+    r: (await DB.readings.all()).length, b: (await DB.books.all()).length, c: (await DB.corners.all()).length,
+  }));
+  assert(JSON.stringify(preCounts) === JSON.stringify(postCounts), 'database untouched by the refused restore');
+
+  step('HARDEN: a hostile invite payload renders inert (no crash, no markup)');
+  const hostile = Buffer.from(JSON.stringify({ kid: { x: 1 }, book: 123, note: '<img src=x onerror=window.__pwned=1>' }), 'utf8')
+    .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hostilePage = await ctxA.newPage();
+  hostilePage.on('pageerror', e => errors.push('hostile: ' + e.message));
+  await hostilePage.goto(`http://localhost:${PORT}/app/#invite=${hostile}`);
+  await hostilePage.waitForSelector('h1.screen-title');
+  assert((await hostilePage.textContent('h1.screen-title')).includes('someone little'), 'non-string fields fall back to safe defaults');
+  assert(!(await hostilePage.$('.card img')), 'note markup is escaped, never parsed');
+  assert(!(await hostilePage.evaluate(() => window.__pwned)), 'no script ran from the payload');
+  await hostilePage.close();
+
   await ctxA.close();
+
+  // ============ capability + boot-failure degradation ============
+  const ctxC = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  step('HARDEN: no MediaRecorder → capture panel degrades to import-only');
+  const pageC = await ctxC.newPage();
+  pageC.on('pageerror', e => errors.push('C: ' + e.message));
+  await pageC.addInitScript(() => { try { delete window.MediaRecorder; } catch (e) { window.MediaRecorder = undefined; } });
+  await pageC.goto(inviteHref);
+  await pageC.waitForSelector('.rec-hero');
+  assert(!(await pageC.$('#rec')), 'no dead record button');
+  assert((await pageC.textContent('.rec-hero')).includes('can’t record directly'), 'honest capability note');
+  assert(await pageC.$('#imp'), 'import path still offered');
+  await pageC.close();
+
+  step('HARDEN: a broken database opens a calm failure screen, not a blank page');
+  const pageC2 = await ctxC.newPage();
+  await pageC2.addInitScript(() => { indexedDB.open = () => { throw new Error('boom'); }; });
+  await pageC2.goto(`http://localhost:${PORT}/app/`);
+  await pageC2.waitForSelector('.card:has-text("a hiccup, not a loss")');
+  assert((await pageC2.textContent('.card')).includes('still stored'), 'reassures that data is intact');
+  assert(await pageC2.$('#retry'), 'offers a retry');
+  await pageC2.close();
+  await ctxC.close();
 
   // ============ PART B: in-place v1 → v2 IndexedDB migration ============
   const ctxB = await browser.newContext({ viewport: { width: 390, height: 844 } });

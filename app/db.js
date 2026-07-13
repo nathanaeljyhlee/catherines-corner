@@ -79,7 +79,10 @@ function openDB() {
       if (e.oldVersion >= 1 && e.oldVersion < 2) migrateV1(req.transaction);
     };
     req.onsuccess = () => { _db = req.result; resolve(_db); };
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(req.error || new Error('The library on this device couldn’t be opened.'));
+    // Another tab holding an older schema blocks the upgrade forever — say so
+    // instead of hanging on a blank screen.
+    req.onblocked = () => reject(new Error('Catherine’s Corner is open in another tab — close it and reopen this one. Nothing is lost.'));
   });
 }
 
@@ -162,6 +165,27 @@ const DBAPI = {
     remove: async id => { await del('readings', id); await del('audio', id); },
     forBook: bookId => getAllByIndex('readings', 'byBook', bookId),
     told: async cornerId => inCorner(await getAll('readings'), cornerId).filter(r => !r.bookId),
+    // The one write that must never half-happen: reading metadata and its
+    // voice land in ONE transaction (a quota abort rolls both back — no
+    // orphan rows), then the audio is read back to prove the browser really
+    // kept it before anyone is told "saved".
+    async saveWithAudio(reading, blob) {
+      const db = await openDB();
+      await new Promise((resolve, reject) => {
+        const t = db.transaction(['readings', 'audio'], 'readwrite');
+        t.objectStore('audio').put({ id: reading.id, blob });
+        t.objectStore('readings').put(reading);
+        t.oncomplete = resolve;
+        t.onerror = () => reject(t.error || new Error('save failed'));
+        t.onabort = () => reject(t.error || new Error('save aborted'));
+      });
+      const back = await DBAPI.audio.get(reading.id);
+      if (!back || back.size !== blob.size) {
+        await DBAPI.readings.remove(reading.id).catch(() => {});
+        throw new Error('The recording didn’t survive the write — nothing was saved.');
+      }
+      return reading;
+    },
   },
   // A reading's voice, fetched only when something actually plays or exports.
   audio: {
@@ -178,6 +202,25 @@ const DBAPI = {
   settings: {
     get: async key => { const row = await getOne('settings', key); return row ? row.value : null; },
     set: (key, value) => put('settings', { key, value }),
+  },
+  // Ask the browser to treat the corner as must-keep, and report honestly
+  // whether it agreed (surfaced under "Keep it safe").
+  async requestPersistence() {
+    try {
+      if (navigator.storage && navigator.storage.persist) return await navigator.storage.persist();
+    } catch (e) { /* not offered here */ }
+    return null;
+  },
+  async storageStatus() {
+    const out = { persisted: null, usage: null, quota: null };
+    try { if (navigator.storage && navigator.storage.persisted) out.persisted = await navigator.storage.persisted(); } catch (e) {}
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const e = await navigator.storage.estimate();
+        out.usage = e.usage ?? null; out.quota = e.quota ?? null;
+      }
+    } catch (e) {}
+    return out;
   },
   uid,
 };

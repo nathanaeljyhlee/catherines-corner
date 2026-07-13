@@ -434,51 +434,70 @@
       await DB.books.save(book);
     }
 
+    // A failed save must be loud AND lossless: the draft stays right here,
+    // storage-full gets called by name, and no half-written rows are left.
+    function saveErrorMessage(err) {
+      const full = err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''));
+      return full
+        ? 'This device’s storage is full, so the reading was NOT saved — it’s still right here. Free some space, then tap save again.'
+        : 'Saving didn’t finish — nothing was lost, your recording is still here. ' + ((err && err.message) || '') + ' Try again.';
+    }
+
     const saveRow = el(
       '<div class="btn-row" style="margin-top:18px">' +
       '<button class="btn primary big" id="save">' + (editing ? 'Save the changes' : 'Save the reading') + '</button>' +
       '<button class="btn danger" id="discard">' + (editing ? 'cancel' : 'discard') + '</button></div>');
     root.appendChild(saveRow);
-    saveRow.querySelector('#save').onclick = async () => {
+    saveRow.querySelector('#save').onclick = async e => {
+      const btn = e.currentTarget;
       audio.pause(); if (raf) cancelAnimationFrame(raf);
-      await saveBookIfChanged();
-      if (editing) {
-        const existing = await DB.readings.get(S.rec.editingId);
-        if (existing) {
-          existing.pageTurns = turns;
-          existing.skipRanges = skips;
-          await DB.readings.save(existing);
-          toast('Saved — the shelf plays it the new way.');
+      btn.disabled = true;
+      try {
+        await saveBookIfChanged();
+        if (editing) {
+          const existing = await DB.readings.get(S.rec.editingId);
+          if (existing) {
+            existing.pageTurns = turns;
+            existing.skipRanges = skips;
+            await DB.readings.save(existing);
+            toast('Saved — the shelf plays it the new way.');
+          }
+          leaveEdit();
+          return;
         }
-        leaveEdit();
-        return;
+        const corner = await DB.corners.active();
+        const reading = {
+          id: DB.uid(),
+          cornerId: book ? (book.cornerId ?? (corner && corner.id)) : (corner && corner.id) || null,
+          bookId: S.rec.bookId || null,
+          readerId: S.rec.readerId,
+          title: S.rec.told ? S.rec.storyTitle : (S.rec.episodeTitle || null),
+          episodeIndex: S.rec.episode ? S.rec.episodeIndex : null,
+          duration: S.rec.duration,
+          imported: !!S.rec.imported,
+          pageTurns: turns,
+          skipRanges: skips,
+          isNew: true,
+          createdAt: Date.now(),
+        };
+        // metadata + voice in one transaction, read back before "saved"
+        await DB.readings.saveWithAudio(reading, S.rec.audioBlob);
+        // best-effort bookkeeping — never scary once the reading is safe
+        try {
+          const since = (await DB.settings.get('readingsSinceBackup')) || 0;
+          await DB.settings.set('readingsSinceBackup', since + 1);
+          await DB.requestPersistence();
+          if (S.rec.requestId) {
+            const q = await DB.requests.get(S.rec.requestId);
+            if (q) { q.status = 'done'; await DB.requests.save(q); }
+          }
+        } catch (err) { /* the reading is saved; nudges can wait */ }
+        URL.revokeObjectURL(url);
+        go('recDone', { readingId: reading.id });
+      } catch (err) {
+        toast(saveErrorMessage(err));
+        btn.disabled = false;
       }
-      const corner = await DB.corners.active();
-      const reading = {
-        id: DB.uid(),
-        cornerId: book ? (book.cornerId ?? (corner && corner.id)) : (corner && corner.id) || null,
-        bookId: S.rec.bookId || null,
-        readerId: S.rec.readerId,
-        title: S.rec.told ? S.rec.storyTitle : (S.rec.episodeTitle || null),
-        episodeIndex: S.rec.episode ? S.rec.episodeIndex : null,
-        duration: S.rec.duration,
-        imported: !!S.rec.imported,
-        pageTurns: turns,
-        skipRanges: skips,
-        isNew: true,
-        createdAt: Date.now(),
-      };
-      await DB.readings.save(reading);
-      await DB.audio.set(reading.id, S.rec.audioBlob);
-      const since = (await DB.settings.get('readingsSinceBackup')) || 0;
-      await DB.settings.set('readingsSinceBackup', since + 1);
-      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-      if (S.rec.requestId) {
-        const q = await DB.requests.get(S.rec.requestId);
-        if (q) { q.status = 'done'; await DB.requests.save(q); }
-      }
-      URL.revokeObjectURL(url);
-      go('recDone', { readingId: reading.id });
     };
     saveRow.querySelector('#discard').onclick = () => {
       if (editing) return leaveEdit();
