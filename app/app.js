@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.7.1';
+  const APP_VERSION = '1.8.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -60,6 +60,7 @@
       const name = decodeURIComponent(res.headers.get('x-name') || 'shared recording');
       const blob = Backup.normalizeAudioFile(new File([raw], name, { type: raw.type }));
       S.shared = { blob, name };
+      DB.metrics.bump('record.shared_arrived');
       toast('A recording arrived 🎙 — open “for grown-ups” to turn it into a reading.');
     } catch (e) { /* inbox is best-effort */ }
   }

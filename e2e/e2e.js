@@ -357,6 +357,25 @@ async function enterPin(page, digits) {
   assert(countAfter === countBefore + 1, 'retry after freeing space saves exactly once');
   await page.click('#home');
 
+  step('ANALYTICS: pain-point areas counted locally; usage screen + snapshot share');
+  const m = await page.evaluate(async () => {
+    const rows = await DB.metrics.all();
+    return Object.fromEntries(rows.map(r => [r.key, r.n]));
+  });
+  assert((m['record.flow_started'] || 0) >= 2, 'record flows counted (got ' + m['record.flow_started'] + ')');
+  assert((m['record.reading_saved'] || 0) >= 1, 'saved readings counted');
+  assert((m['record.audio_recorded'] || 0) >= 1, 'live recordings counted');
+  assert((m['error.save_failed'] || 0) >= 1, 'failed saves counted as a pain point');
+  assert((m['safety.restore_done'] || 0) >= 2, 'restores counted');
+  assert((m['record.edit_saved'] || 0) >= 1, 'edit flow counted');
+  await page.click('#usagelink'); // we are on grown-up home after the quota retry
+  await page.waitForSelector('h1:has-text("What gets used")');
+  assert((await page.textContent('body')).includes('Counts only, kept on this device'), 'usage screen carries the honesty line');
+  assert(await page.$('.card .kicker:has-text("recording")'), 'recording area rendered');
+  assert(await page.$('.card .kicker:has-text("rough edges")'), 'error area rendered');
+  assert(await page.$('#share:not([disabled])'), 'snapshot share offered');
+  await page.click('.back'); // usage → home
+
   step('HARDEN: a corrupted backup zip is refused whole — nothing written');
   const corrupted = fs.readFileSync(zipPath);
   corrupted[Math.floor(corrupted.length * 0.4)] ^= 0xFF; // bit-rot one byte in an entry
@@ -479,6 +498,61 @@ async function enterPin(page, digits) {
   await pageB.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
 
   await ctxB.close();
+
+  // ============ PART C: v2 → v3 migration (what LIVE users on v1.7.1 hit) ============
+  const ctxD = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const pageD = await ctxD.newPage();
+  pageD.on('pageerror', e => errors.push('D: ' + e.message));
+
+  step('seed a real v2 database (corners + audio store, no metrics) → v3 adds counting only');
+  await pageD.goto(`http://localhost:${PORT}/blank.html`);
+  await pageD.evaluate(async b64 => {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const db = await new Promise((res, rej) => {
+      const req = indexedDB.open('catherines-corner', 2);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        d.createObjectStore('readers', { keyPath: 'id' });
+        d.createObjectStore('books', { keyPath: 'id' });
+        const s = d.createObjectStore('readings', { keyPath: 'id' });
+        s.createIndex('byBook', 'bookId'); s.createIndex('byReader', 'readerId');
+        d.createObjectStore('requests', { keyPath: 'id' });
+        d.createObjectStore('settings', { keyPath: 'key' });
+        d.createObjectStore('corners', { keyPath: 'id' });
+        d.createObjectStore('audio', { keyPath: 'id' });
+      };
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    await new Promise((res, rej) => {
+      const t = db.transaction(['readers', 'books', 'readings', 'settings', 'corners', 'audio'], 'readwrite');
+      t.objectStore('settings').put({ key: 'alphaAck', value: 1 });
+      t.objectStore('settings').put({ key: 'activeCornerId', value: 'c-mei' });
+      t.objectStore('corners').put({ id: 'c-mei', name: 'Mei', createdAt: 1 });
+      t.objectStore('readers').put({ id: 'r-dad', name: 'Dad', relationship: 'Dad', color: '#34557A', createdAt: 1 });
+      t.objectStore('books').put({ id: 'b-v2', title: 'The v2 Book', cornerId: 'c-mei', pageFormat: 'single', cover: null, pages: [], createdAt: 1 });
+      t.objectStore('readings').put({ id: 'rd-v2', bookId: 'b-v2', readerId: 'r-dad', cornerId: 'c-mei', title: null, episodeIndex: null,
+        duration: 1, imported: false, pageTurns: [], skipRanges: [], isNew: false, createdAt: 2 });
+      t.objectStore('audio').put({ id: 'rd-v2', blob: new Blob([bytes], { type: 'audio/wav' }) });
+      t.oncomplete = res; t.onerror = () => rej(t.error);
+    });
+    db.close();
+  }, wavB64);
+  await pageD.goto(`http://localhost:${PORT}/app/`);
+  await pageD.waitForSelector('.tile:has-text("The v2 Book")');
+  const v2mig = await pageD.evaluate(async () => {
+    await DB.metrics.bump('e2e.migration_probe');
+    const rows = await DB.metrics.all();
+    const blob = await DB.audio.get('rd-v2');
+    return { metricsWork: rows.some(r => r.key === 'e2e.migration_probe'), blobSize: blob ? blob.size : 0 };
+  });
+  assert(v2mig.metricsWork, 'metrics store created by v2→v3 upgrade and counting works');
+  assert(v2mig.blobSize > 4000, 'v2 data untouched by the upgrade');
+  await pageD.click('.tile:has-text("The v2 Book")');
+  await pageD.waitForSelector('.p-stage');
+  await pageD.click('#pp');
+  await pageD.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  await ctxD.close();
   await browser.close();
   server.close();
 

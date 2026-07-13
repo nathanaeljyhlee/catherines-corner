@@ -63,23 +63,26 @@
   // A row of ✉️ / 💬 / ⧉ buttons that opens the right app with the message
   // written out, pre-addressed from the reader's saved contact when there is
   // one. Callers may append their own extra buttons to the returned row.
-  function sendRow(reader, subject, text) {
+  function sendRow(reader, subject, text, area) {
+    const track = how => { if (area) DB.metrics.bump(area + '.' + how); };
     const row = el(
       '<div class="btn-row rowbtns">' +
       '<button class="btn" data-em title="opens your mail app with the message written out">✉️ email</button>' +
       '<button class="btn" data-sm title="opens your messages app with the message written out">💬 text</button>' +
       '<button class="btn" data-share>⧉ share</button></div>');
     row.querySelector('[data-em]').onclick = () => {
+      track('sent_email');
       launchHref('mailto:' + encodeURIComponent(reader && reader.email || '') +
         '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(text));
     };
     row.querySelector('[data-sm]').onclick = () => {
+      track('sent_text');
       const num = reader && reader.phone ? reader.phone.replace(/[^\d+]/g, '') : '';
       // iOS wants "sms:num&body=", Android "sms:num?body=" — both open
       // the messages app with the message typed and ready to send.
       launchHref('sms:' + num + (IS_IOS ? '&' : '?') + 'body=' + encodeURIComponent(text));
     };
-    row.querySelector('[data-share]').onclick = () => shareText(text);
+    row.querySelector('[data-share]').onclick = () => { track('sent_share'); shareText(text); };
     return row;
   }
 
@@ -107,6 +110,7 @@
     const kid = (inv.kid || '').slice(0, 40) || 'someone little';
     const book = (inv.book || '').slice(0, 120) || null;
     const note = (inv.note || '').slice(0, 200) || null;
+    DB.metrics.bump('guest.opened');
 
     root.appendChild(el(
       '<div class="kicker">an invitation to read</div>' +
@@ -132,7 +136,7 @@
       stageWrap.appendChild(capturePanel({
         statusIdle: 'ready when you are',
         note: '…or bring a recording you already made — a voice memo works beautifully.',
-        onAudio: (blob, duration) => showSend(blob, duration),
+        onAudio: (blob, duration) => { DB.metrics.bump('guest.recorded'); showSend(blob, duration); },
       }));
       stageWrap.appendChild(el(
         '<p class="hint" style="margin-top:12px">💡 Keep this link — any time you’d like to send ' + esc(kid) +
@@ -157,6 +161,7 @@
         '<p class="hint" style="margin-top:10px">Nothing was uploaded anywhere — this recording exists only here until you send it.</p></div>');
       stageWrap.appendChild(card);
       card.querySelector('#send').onclick = async () => {
+        DB.metrics.bump('guest.sendback');
         const file = new File([blob], fname, { type: blob.type || 'audio/webm' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           try { await navigator.share({ files: [file], text: 'A reading for ' + kid + ' 🌙' }); return; }

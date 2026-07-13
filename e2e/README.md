@@ -18,6 +18,10 @@ owner journey plus the seams that history shows break quietly:
   completeness checks, nothing written), a hostile invite payload renders
   inert, a browser without MediaRecorder degrades to import-only, and a
   broken database opens a calm failure screen instead of a blank page
+- **local usage analytics**: pain-point areas counted through the whole
+  journey (including failed saves), the "what gets used" screen renders with
+  its honesty line and snapshot share, and BOTH live-user migrations are
+  seeded and verified (v1 → v3 and v2 → v3, data untouched, playback intact)
 
 Run it:
 

@@ -48,6 +48,7 @@
         '<button class="btn ghost" id="fback">never mind</button></div></div>'));
       wrap.querySelector('#chk').onclick = async () => {
         if (parseInt(wrap.querySelector('#ans').value, 10) === a * b) {
+          DB.metrics.bump('gate.pin_reset');
           await DB.settings.set('pin', null);
           toast('Code cleared — choose a new one.');
           go('pin');
@@ -189,9 +190,11 @@
 
     const helpLine = el(
       '<p class="hint" style="margin-top:14px">🎙 Someone already recorded a voice memo on their phone? <a href="#" id="memohelp">Here’s how to bring it in</a>.' +
-      '<br>👧 Reading to more than one child? <a href="#" id="cornerslink">Every child can have their own corner</a>.</p>');
+      '<br>👧 Reading to more than one child? <a href="#" id="cornerslink">Every child can have their own corner</a>.' +
+      '<br>📊 Curious (or the maker asked)? <a href="#" id="usagelink">What gets used</a> — counts only, kept on this device.</p>');
     helpLine.querySelector('#memohelp').onclick = e => { e.preventDefault(); go('memoHelp'); };
     helpLine.querySelector('#cornerslink').onclick = e => { e.preventDefault(); go('corners'); };
+    helpLine.querySelector('#usagelink').onclick = e => { e.preventDefault(); go('usage'); };
     root.appendChild(helpLine);
   });
 
@@ -218,7 +221,7 @@
         (n || nb || corners.length === 1 ? '' : '<button class="btn danger" data-x>remove</button>') +
         '</div>');
       const sw = row.querySelector('[data-sw]');
-      if (sw) sw.onclick = async () => { await DB.corners.setActive(c.id); render(); };
+      if (sw) sw.onclick = async () => { DB.metrics.bump('corners.switched'); await DB.corners.setActive(c.id); render(); };
       row.querySelector('[data-rn]').onclick = async () => {
         const v = prompt('This corner belongs to…', c.name);
         if (v && v.trim()) { c.name = v.trim().slice(0, 30); await DB.corners.save(c); render(); }
@@ -240,6 +243,7 @@
       const corner = { id: DB.uid(), name: v, createdAt: Date.now() };
       await DB.corners.save(corner);
       await DB.corners.setActive(corner.id);
+      DB.metrics.bump('corners.added');
       toast(v + '’s corner is ready — their shelf is showing now.');
       go('home');
     };
@@ -252,6 +256,7 @@
   // VOICE-MEMO GUIDE — how a memo becomes a reading, per platform
   // =========================================================
   register('memoHelp', async function memoHelp(root) {
+    DB.metrics.bump('help.memo_guide_opened');
     const isIOS = UI.IS_IOS;
     const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
@@ -351,6 +356,7 @@
         setTimeout(() => URL.revokeObjectURL(a.href), 30000);
         await DB.settings.set('lastBackupAt', Date.now());
         await DB.settings.set('readingsSinceBackup', 0);
+        DB.metrics.bump('safety.backup_done');
         toast('Backed up — keep that file somewhere safe.');
         render();
       } catch (err) {
@@ -369,11 +375,13 @@
       if (!f) return;
       try {
         const counts = await Backup.importFile(f);
+        DB.metrics.bump('safety.restore_done');
         clearURLCache();
         toast('Restored ' + counts.readings + ' reading' + (counts.readings === 1 ? '' : 's') + ', ' +
           counts.books + ' book' + (counts.books === 1 ? '' : 's') + ', ' + counts.readers + ' reader' + (counts.readers === 1 ? '' : 's') + '.');
         render();
       } catch (err) {
+        DB.metrics.bump('error.restore_failed');
         toast(err.message || 'That file couldn’t be restored.');
       }
     };
@@ -516,6 +524,7 @@
         cornerId: ctx.corner ? ctx.corner.id : null, createdAt: Date.now(),
       };
       await DB.books.save(b);
+      DB.metrics.bump('library.book_added');
       return b;
     }
     card.querySelector('#save').onclick = async () => {
@@ -620,6 +629,85 @@
   });
 
   // =========================================================
+  // WHAT GETS USED — local usage counts, grouped by pain-point area.
+  // Counts only, kept on this device; they leave only when a grown-up
+  // taps share — that snapshot is how alpha pain points reach the maker.
+  // =========================================================
+  const AREA_ORDER = ['record', 'invite', 'guest', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
+  const AREA_LABELS = {
+    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', play: '📖 listening',
+    library: '📚 the library', corners: '👧 corners', safety: '🗄 keep it safe', help: '❓ help',
+    gate: '🔢 the grown-up code', error: '⚠️ rough edges',
+  };
+  function last7days(row) {
+    const cutoff = Date.now() - 7 * 86400000;
+    let s = 0;
+    for (const [d, n] of Object.entries(row.days || {})) {
+      if (new Date(d + 'T23:59:59Z').getTime() >= cutoff) s += n;
+    }
+    return s;
+  }
+  register('usage', async function adultUsage(root, ctx) {
+    const [rows, readings, books] = await Promise.all([DB.metrics.all(), DB.readings.all(), DB.books.all()]);
+    root.appendChild(el(
+      '<h1 class="screen-title">What gets used</h1>' +
+      '<p class="screen-sub">Simple counts of what happens in the app, grouped by area — so the rough spots show up as numbers instead of guesses. ' +
+      '<b>Counts only, kept on this device:</b> never recordings, never names or titles. They leave only if you share them below.</p>'));
+
+    const byArea = new Map();
+    for (const r of rows) {
+      const dot = r.key.indexOf('.');
+      const area = dot > 0 ? r.key.slice(0, dot) : 'other';
+      if (!byArea.has(area)) byArea.set(area, []);
+      byArea.get(area).push(r);
+    }
+    const areas = [...new Set([...AREA_ORDER.filter(a => byArea.has(a)), ...byArea.keys()])];
+
+    if (!rows.length) {
+      root.appendChild(el('<div class="empty"><div class="big">📊</div>Nothing counted yet — use the app a little and look back here.</div>'));
+    }
+    const snapshotLines = ['Catherine’s Corner usage snapshot · v' + App.VERSION + ' · ' + new Date().toISOString().slice(0, 10),
+      '(counts only — no recordings, names, or titles)', ''];
+    for (const area of areas) {
+      const list = byArea.get(area).sort((a, b) => b.n - a.n);
+      const card = el('<div class="card" style="margin-bottom:12px"><div class="kicker">' + (AREA_LABELS[area] || area) + '</div><div class="stack" style="margin-top:10px"></div></div>');
+      const stack = card.querySelector('.stack');
+      const parts = [];
+      for (const r of list) {
+        const name = r.key.slice(area.length + 1).replace(/_/g, ' ');
+        const week = last7days(r);
+        stack.appendChild(el(
+          '<div class="rowitem"><div class="grow"><div class="t" style="font-family:Inter,system-ui,sans-serif; font-size:13.5px">' + esc(name) + '</div></div>' +
+          '<span class="chip">' + r.n + ' total</span>' + (week ? '<span class="chip open">' + week + ' this week</span>' : '') + '</div>'));
+        parts.push(name.replace(/ /g, '_') + ' ' + r.n + (week ? ' (7d ' + week + ')' : ''));
+      }
+      root.appendChild(card);
+      snapshotLines.push((AREA_LABELS[area] || area).replace(/^[^ ]+ /, '') + ': ' + parts.join(' · '));
+    }
+    snapshotLines.push('', 'context: ' + ctx.corners.length + ' corner' + (ctx.corners.length === 1 ? '' : 's') +
+      ' · ' + books.length + ' books · ' + readings.length + ' readings · ' +
+      (UI.IS_IOS ? 'iOS' : 'not iOS') + ' · installed: ' +
+      ((window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) ? 'yes' : 'no'));
+    const snapshot = snapshotLines.join('\n');
+
+    const row = el(
+      '<div class="btn-row">' +
+      '<button class="btn primary" id="share" ' + (rows.length ? '' : 'disabled') + '>⧉ Share this snapshot</button>' +
+      '<button class="btn danger" id="reset" ' + (rows.length ? '' : 'disabled') + '>start counting fresh</button></div>' +
+      '<p class="hint" style="margin-top:10px">Sharing sends the text above to whoever you choose — it’s how your testing shapes what gets fixed first.</p>');
+    root.appendChild(row);
+    row.querySelector('#share').onclick = () => Send.shareText(snapshot);
+    row.querySelector('#reset').onclick = async () => {
+      if (!confirm('Reset all usage counts to zero? (Recordings and books are untouched.)')) return;
+      await DB.metrics.reset();
+      render();
+    };
+    const back = el('<button class="back">‹ grown-up home</button>');
+    back.onclick = () => go('home');
+    root.appendChild(back);
+  });
+
+  // =========================================================
   // BOOK REQUESTS — ask a loved one, from anywhere
   // =========================================================
   register('requests', async function adultRequests(root, ctx) {
@@ -644,11 +732,13 @@
       if (q.status === 'open') {
         const link = Send.inviteLink({ kid: ctx.cornerName, book: bk ? bk.title : q.bookTitle, note: q.note });
         const text = Send.requestMessage(ctx.cornerName, bk ? bk.title : q.bookTitle, q.note, link);
-        const btns = Send.sendRow(rd, 'A reading for ' + (ctx.cornerName || 'someone little'), text);
-        btns.appendChild(el('<a class="btn" href="' + esc(link) + '" target="_blank" rel="noopener" title="the page the link opens for them">👀 preview</a>'));
+        const btns = Send.sendRow(rd, 'A reading for ' + (ctx.cornerName || 'someone little'), text, 'invite');
+        const pv = el('<a class="btn" href="' + esc(link) + '" target="_blank" rel="noopener" title="the page the link opens for them">👀 preview</a>');
+        pv.onclick = () => DB.metrics.bump('invite.previewed');
+        btns.appendChild(pv);
         btns.appendChild(el('<button class="btn warm" data-rec>record now</button>'));
         btns.appendChild(el('<button class="btn" data-done>mark read</button>'));
-        btns.querySelector('[data-rec]').onclick = () => App.startRecordFlow({ bookId: q.bookId, requestId: q.id, readerId: q.readerId });
+        btns.querySelector('[data-rec]').onclick = () => { DB.metrics.bump('invite.record_now'); App.startRecordFlow({ bookId: q.bookId, requestId: q.id, readerId: q.readerId }); };
         btns.querySelector('[data-done]').onclick = async () => { q.status = 'done'; await DB.requests.save(q); render(); };
         row.appendChild(btns);
         // The half of the loop that lands back here: say plainly how the
@@ -686,6 +776,7 @@
         note: card.querySelector('#nt').value.trim(), status: 'open',
         cornerId, createdAt: Date.now(),
       });
+      DB.metrics.bump('invite.request_created');
       toast('Request added — send it on its way with ✉️ or 💬.');
       render();
     };
