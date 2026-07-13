@@ -652,7 +652,22 @@
     root.appendChild(el(
       '<h1 class="screen-title">What gets used</h1>' +
       '<p class="screen-sub">Simple counts of what happens in the app, grouped by area — so the rough spots show up as numbers instead of guesses. ' +
-      '<b>Counts only, kept on this device:</b> never recordings, never names or titles. They leave only if you share them below.</p>'));
+      '<b>Counts only' + (window.Telemetry && Telemetry.active() ? ' — shared with the maker anonymously (off switch below)' : ', kept on this device') + ':</b> ' +
+      'never recordings, never names or titles.</p>'));
+
+    // When the maker has a collector configured, say so plainly and hand the
+    // family the switch.
+    if (window.Telemetry && Telemetry.configured()) {
+      const on = !Telemetry.isOff();
+      const tcard = el(
+        '<div class="card" style="margin-bottom:12px"><div class="kicker">sharing with the maker</div>' +
+        '<p class="hint" style="margin-top:8px">' + (on
+          ? 'These counts are sent automatically as they happen — anonymous, counts only, so the rough spots get fixed first.'
+          : 'Automatic sharing is off. Counts stay on this device unless you share a snapshot below.') + '</p>' +
+        '<div class="btn-row"><button class="btn" id="ttoggle">' + (on ? 'stop sending automatically' : 'turn automatic sharing back on') + '</button></div></div>');
+      tcard.querySelector('#ttoggle').onclick = async () => { await Telemetry.setOff(on); render(); };
+      root.appendChild(tcard);
+    }
 
     const byArea = new Map();
     for (const r of rows) {

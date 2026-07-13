@@ -22,6 +22,9 @@ owner journey plus the seams that history shows break quietly:
   journey (including failed saves), the "what gets used" screen renders with
   its honesty line and snapshot share, and BOTH live-user migrations are
   seeded and verified (v1 → v3 and v2 → v3, data untouched, playback intact)
+- **telemetry**: proven dormant while unconfigured (zero requests across the
+  whole suite), delivers events to a fake collector once configured, and the
+  family off switch stops sending while local counting continues
 
 Run it:
 

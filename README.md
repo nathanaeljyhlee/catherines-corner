@@ -15,7 +15,8 @@ The people your child loves, reading their favorite books aloud — kept to list
 
 No bundler — modules are plain scripts wired in `app/index.html`:
 
-- `db.js` — IndexedDB schema v2: **corners** (one shelf per child), readers shared across corners, books/readings/requests corner-scoped, **audio in its own store** so list screens never load blobs, in-place v1→v2 migration.
+- `db.js` — IndexedDB schema v3: **corners** (one shelf per child), readers shared across corners, books/readings/requests corner-scoped, **audio in its own store** so list screens never load blobs, a **metrics** store (usage counts by pain-point area — counts only, never content), in-place migrations from v1/v2.
+- `telemetry.js` — **dormant by default.** When the maker sets its `ENDPOINT` (a GoatCounter site, ~3-min signup: create the site, paste `https://<code>.goatcounter.com/count`, bump versions, deploy), every local count also pings the collector — event name only, no identifiers, no cookies. Configuring it automatically adds a plain-language line to the alpha notice and an off switch on the "What gets used" screen. While unconfigured, nothing leaves any device.
 - `ui.js` — DOM/format helpers, scrubber, and the shared audio-capture panel (record / pause / import, iOS quirks handled).
 - `send.js` — everything "far away": request messages, ✉️/💬/⧉ send row, **invite links** (`#invite=` payload, no server), and the guest recording page they open.
 - `app.js` — the shell: state, screen registry + router, player handle, share-target inbox, boot.

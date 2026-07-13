@@ -14,8 +14,14 @@ const CHROMIUM = fs.existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/
 
 // ---------- tiny static server (with a synthetic /blank.html for DB seeding) ----------
 const MIME = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', png: 'image/png', zip: 'application/zip' };
+const countHits = [];   // the fake telemetry collector's inbox
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0].split('#')[0];
+  if (url === '/count') {
+    countHits.push(new URL(req.url, 'http://x').searchParams.get('p'));
+    res.writeHead(200, { 'content-type': 'image/gif' });
+    return res.end();
+  }
   if (url === '/blank.html') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<!doctype html><title>blank</title>ok'); }
   let p = path.join(ROOT, decodeURIComponent(url));
   if (p.endsWith('/')) p += 'index.html';
@@ -370,10 +376,31 @@ async function enterPin(page, digits) {
   assert((m['record.edit_saved'] || 0) >= 1, 'edit flow counted');
   await page.click('#usagelink'); // we are on grown-up home after the quota retry
   await page.waitForSelector('h1:has-text("What gets used")');
-  assert((await page.textContent('body')).includes('Counts only, kept on this device'), 'usage screen carries the honesty line');
+  assert((await page.textContent('body')).includes('kept on this device'), 'usage screen carries the honesty line');
   assert(await page.$('.card .kicker:has-text("recording")'), 'recording area rendered');
   assert(await page.$('.card .kicker:has-text("rough edges")'), 'error area rendered');
   assert(await page.$('#share:not([disabled])'), 'snapshot share offered');
+  await page.click('.back'); // usage → home
+
+  step('TELEMETRY: dormant by default; pings the maker only when configured; off switch respected');
+  assert(countHits.length === 0, 'no telemetry left any device while unconfigured (got ' + countHits.length + ' hits)');
+  await page.evaluate(origin => Telemetry.configure(origin + '/count'), `http://localhost:${PORT}`);
+  await page.evaluate(() => DB.metrics.bump('e2e.telemetry_ping'));
+  await page.waitForFunction(() => true); // let the pixel fire
+  for (let i = 0; i < 40 && !countHits.includes('/e2e.telemetry_ping'); i++) await sleep(100);
+  assert(countHits.includes('/e2e.telemetry_ping'), 'configured telemetry delivers the event to the collector');
+  const before = countHits.length;
+  await page.evaluate(() => Telemetry.setOff(true));
+  await page.evaluate(() => DB.metrics.bump('e2e.telemetry_muted'));
+  await sleep(800);
+  assert(!countHits.includes('/e2e.telemetry_muted') && countHits.length === before, 'the family off switch stops all sending');
+  const localStillCounts = await page.evaluate(async () => (await DB.metrics.all()).some(r => r.key === 'e2e.telemetry_muted'));
+  assert(localStillCounts, 'local counting continues even when sending is off');
+  // usage screen discloses + offers the switch when configured
+  await page.click('#usagelink');
+  await page.waitForSelector('.card .kicker:has-text("sharing with the maker")');
+  assert(await page.$('#ttoggle'), 'off/on switch rendered');
+  await page.evaluate(() => { Telemetry.configure(''); return Telemetry.setOff(false); }); // back to dormant for the rest
   await page.click('.back'); // usage → home
 
   step('HARDEN: a corrupted backup zip is refused whole — nothing written');
