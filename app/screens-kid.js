@@ -185,6 +185,7 @@
       '<div class="p-top"><div><div class="p-title">' + esc(title) + '</div><div class="p-by">' + esc(sub) + '</div></div>' +
       avatar(reader) + '</div>' +
       '<div class="p-stage' + (spread ? ' spread' : '') + '" id="stage"></div>' +
+      '<div class="p-cap" id="cap" style="display:none"></div>' +
       '<div class="p-bar">' +
       '<button class="p-play" id="pp" aria-label="play">▶</button>' +
       '<div class="p-track" id="track"><i id="fill"></i></div>' +
@@ -222,6 +223,30 @@
     let lastIdx = 0;
 
     function dur() { return audio.duration && isFinite(audio.duration) ? audio.duration : (reading.duration || 0); }
+
+    // Read-along words: the current page's text sits under the picture and
+    // lights up gently across the page's stretch of the recording.
+    const $cap = wrap.querySelector('#cap');
+    const hasWords = pages.some(p => p.text);
+    let capIdx = -1;
+    function paintCaption(tSec) {
+      if (!hasWords || !pages.length || stage.querySelector('.calm')) { $cap.style.display = 'none'; return; }
+      const idx = Math.min(currentPageIndex(reading, tSec), pages.length - 1);
+      const p = pages[idx];
+      if (!p.text) { $cap.style.display = 'none'; capIdx = idx; return; }
+      if (idx !== capIdx) {
+        capIdx = idx;
+        $cap.style.display = '';
+        $cap.innerHTML = String(p.text).split(/\s+/).filter(Boolean).map(w => '<span>' + esc(w) + '</span>').join(' ');
+      }
+      const turns = reading.pageTurns || [];
+      const start = idx === 0 ? 0 : (turns[idx - 1] || 0) / 1000;
+      const end = idx < turns.length ? turns[idx] / 1000 : Math.max(dur(), start + 0.5);
+      const words = $cap.children;
+      const n = Math.ceil(Math.max(0, Math.min(1, (tSec - start) / Math.max(0.5, end - start))) * words.length);
+      for (let i = 0; i < words.length; i++) words[i].classList.toggle('on', i < n);
+    }
+    paintCaption(0);
     // userSeek: only a deliberate scrub may sweep the calm end-screen away —
     // the frame loop must never repaint over it.
     function paintNow(userSeek) {
@@ -230,6 +255,7 @@
       $time.textContent = fmt(audio.currentTime) + (d ? ' / ' + fmt(d) : '');
       const idx = currentPageIndex(reading, audio.currentTime);
       if (idx !== lastIdx || (userSeek && stage.querySelector('.calm'))) { lastIdx = idx; renderStage(idx); }
+      paintCaption(audio.currentTime);
     }
     function tick() {
       if (!player.audio) return;
@@ -259,7 +285,7 @@
         '<button class="btn ghost" id="shelf2">Back to the shelf</button>' +
         '</div></div>');
       stage.appendChild(calm);
-      calm.querySelector('#again').onclick = () => { renderStage(0); lastIdx = 0; audio.currentTime = 0; audio.play(); $pp.textContent = '❘❘'; tick(); };
+      calm.querySelector('#again').onclick = () => { renderStage(0); lastIdx = 0; capIdx = -1; audio.currentTime = 0; audio.play(); $pp.textContent = '❘❘'; tick(); };
       if (next) calm.querySelector('#next').onclick = () => { DB.metrics.bump('play.next_chapter'); go('player', { readingId: next.id }); };
       calm.querySelector('#shelf2').onclick = () => go('shelf');
     };

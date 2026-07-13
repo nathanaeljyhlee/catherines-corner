@@ -38,6 +38,13 @@ owner journey plus the seams that history shows break quietly:
   new, spread playback works), re-accepting adds nothing, and a mis-addressed
   parcel warns plainly before anything is tucked in
 
+- **live-promise coverage**: every user-facing claim is exercised — read-along
+  words (typed in pass 2, lit up in the player, surviving backup round-trips),
+  ✨ suggested turns, "add a cover photo later", keep-a-copy downloads, serial
+  chapters (badge → episode list → next-chapter offer), the quiet multi-voice
+  picker, the kid cover studio, and the voice-memo share target (POST → toast
+  → arrived card → pass 1 skipped → thank-you loop)
+
 Run it:
 
 ```

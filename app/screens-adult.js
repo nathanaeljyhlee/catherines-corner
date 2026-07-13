@@ -645,12 +645,24 @@
       '<button class="btn primary" id="rec">🎙️ Record this book</button>' +
       '<button class="btn" id="ask">📬 Ask someone to read it</button>' +
       '<button class="btn" id="art">🖍️ Design a colorful cover</button>' +
+      '<span class="btn filebtn">📷 New cover photo<input type="file" id="cvlater" accept="image/*" capture="environment"></span>' +
       (readings.length ? '<button class="btn" id="parcel" title="pack this book — pages, voices and all — for another family’s Corner">📦 Send to another Corner</button>' : '') +
       '</div>');
     root.appendChild(row);
     row.querySelector('#rec').onclick = () => App.startRecordFlow({ bookId: book.id });
     row.querySelector('#ask').onclick = () => go('requests', { prefillBookId: book.id });
     row.querySelector('#art').onclick = () => go('studio', { bookId: book.id });
+    // "You can also add it later" (add-book screen) — this is the later.
+    row.querySelector('#cvlater').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      book.cover = f;
+      await DB.books.save(book);
+      dropURL('cover-' + book.id);
+      DB.metrics.bump('library.cover_photographed');
+      toast('The new cover is on the shelf.');
+      render();
+    };
     const parcelBtn = row.querySelector('#parcel');
     if (parcelBtn) parcelBtn.onclick = () => sendParcel({ bookId: book.id }, book.title, parcelBtn);
     const back = el('<button class="back">‹ the library</button>');

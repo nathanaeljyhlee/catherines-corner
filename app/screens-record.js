@@ -288,6 +288,8 @@
     audio.onended = () => { $pp.textContent = '▶'; if (raf) cancelAnimationFrame(raf); };
 
     let strip = null, tapBtn = null;
+    let wordsPage = -1, wordsSel = null, textsDirty = false;
+    let wordsCommit = () => {}, loadWords = () => {};
     if (!S.rec.told) {
       const sec = el(
         '<div style="margin-top:16px"><div class="kicker">the pages</div>' +
@@ -297,6 +299,9 @@
         '</div>' +
         '<p class="hint" style="margin:6px 0 4px">Large-print picture books often work best as <b>spreads</b> — photograph both pages in one shot (hold the phone sideways): half as many taps, and at playback both pages show big in landscape.</p>' +
         '<div class="pagestrip" id="strip"></div>' +
+        '<div class="field" id="wordswrap" style="margin:8px 0 2px; display:none">' +
+        '<label id="wlabel">words on this page (optional)</label>' +
+        '<textarea id="wtext" rows="2" placeholder="type or paste this page’s words — they appear on screen to read along, for every voice"></textarea></div>' +
         '<div class="btn-row">' +
         '<button class="btn warm big" id="tap" ' + (pages.length + newPages.length ? '' : 'disabled') + '>👆 Tap — page turn</button>' +
         '<button class="btn" id="suggest" ' + (pages.length + newPages.length > 1 ? '' : 'disabled') + '>✨ Suggest the turns</button>' +
@@ -308,6 +313,25 @@
       root.appendChild(sec);
       strip = sec.querySelector('#strip');
       tapBtn = sec.querySelector('#tap');
+      // Read-along words: typed once, they belong to the book's page (like the
+      // photo itself) and follow every voice at playback.
+      const $wwrap = sec.querySelector('#wordswrap'), $wtext = sec.querySelector('#wtext'), $wlabel = sec.querySelector('#wlabel');
+      wordsCommit = () => {
+        const all = pages.concat(newPages);
+        if (wordsPage < 0 || !all[wordsPage]) return;
+        const v = $wtext.value.trim();
+        if ((all[wordsPage].text || '') !== v) { all[wordsPage].text = v || null; textsDirty = true; }
+      };
+      loadWords = i => {
+        const all = pages.concat(newPages);
+        if (!all.length) { $wwrap.style.display = 'none'; return; }
+        $wwrap.style.display = '';
+        if (i === wordsPage) return;
+        wordsCommit();
+        wordsPage = i;
+        $wtext.value = (all[i] && all[i].text) || '';
+        $wlabel.textContent = 'words on page ' + (i + 1) + ' (optional — shown to read along)';
+      };
       const sgBtn = sec.querySelector('#suggest');
       const seg = sec.querySelector('#fmt');
       seg.querySelectorAll('button').forEach(b => {
@@ -366,6 +390,8 @@
           const pg = el('<div class="pg" data-i="' + i + '">' +
             '<img alt="" src="' + blobURL('pg-' + p.id, p.blob) + '"><span class="k">' + (i + 1) + '</span><span class="stamp" style="display:none"></span></div>');
           pg.querySelector('img').onclick = () => {
+            wordsSel = i;               // edit this page's words even before its turn exists
+            loadWords(i);
             const t = i === 0 ? 0 : turns[i - 1];
             if (t == null) return;
             audio.currentTime = t / 1000;
@@ -382,6 +408,7 @@
         strip.appendChild(add);
       }
       const cur = (() => { let i = 0; for (const t of turns) { if (audio.currentTime * 1000 >= t) i++; } return i; })();
+      loadWords(!audio.paused || wordsSel == null ? Math.min(cur, all.length - 1) : wordsSel);
       strip.querySelectorAll('.pg').forEach((n, i) => {
         n.classList.toggle('current', i === cur);
         const st = n.querySelector('.stamp');
@@ -432,8 +459,9 @@
 
     async function saveBookIfChanged() {
       if (!book) return;
+      wordsCommit();
       const formatChanged = S.rec.pageFormat && S.rec.pageFormat !== (book.pageFormat || 'single');
-      if (!newPages.length && !formatChanged) return;
+      if (!newPages.length && !formatChanged && !textsDirty) return;
       if (newPages.length) book.pages = pages.concat(newPages);
       if (S.rec.pageFormat) book.pageFormat = S.rec.pageFormat;
       await DB.books.save(book);
