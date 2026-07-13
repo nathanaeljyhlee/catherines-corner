@@ -4,7 +4,15 @@
    Restore merges by id, so re-importing on the same device never duplicates or destroys.
    Format v2 adds corners (one shelf per child) and per-book page format; v1
    backups still restore — their rows are filed under a corner made from the
-   manifest's cornerName. */
+   manifest's cornerName.
+
+   PARCELS share the same zip container: one book (or one told story) with its
+   readings, packed by one family and addressed to another family's Corner ID.
+   The receiving app inspects the parcel, shows what's inside and who it was
+   addressed to, then tucks it onto the ACTIVE corner's shelf — readers merge
+   by name, ids are collision-safe, and re-accepting the same parcel is a
+   no-op. Person-to-person sharing with no server: the file travels however
+   the family already talks. */
 
 (function () {
   'use strict';
@@ -134,6 +142,33 @@
     return new Blob([file], { type });
   }
 
+  // ---------- packing (shared by full backups and parcels) ----------
+  async function packBook(b, files) {
+    const bo = { id: b.id, title: b.title, cornerId: b.cornerId ?? null, pageFormat: b.pageFormat || 'single', createdAt: b.createdAt, cover: null, pages: [] };
+    if (b.cover) {
+      const f = 'images/cover-' + b.id + '.' + extOf(b.cover.type);
+      files.push({ name: f, bytes: new Uint8Array(await b.cover.arrayBuffer()) });
+      bo.cover = { file: f, mime: b.cover.type };
+    }
+    for (const p of b.pages || []) {
+      const f = 'images/page-' + p.id + '.' + extOf(p.blob.type);
+      files.push({ name: f, bytes: new Uint8Array(await p.blob.arrayBuffer()) });
+      bo.pages.push({ id: p.id, type: p.type, file: f, mime: p.blob.type });
+    }
+    return bo;
+  }
+  async function packReading(r, files) {
+    const { audioBlob, ...meta } = r;   // tolerate any pre-v2 stragglers
+    const blob = (await DB.audio.get(r.id)) || audioBlob || null;
+    let audio = null;
+    if (blob) {
+      const f = 'audio/' + r.id + '.' + audioExt(blob.type);
+      files.push({ name: f, bytes: new Uint8Array(await blob.arrayBuffer()) });
+      audio = { file: f, mime: blob.type };
+    }
+    return { ...meta, audio };
+  }
+
   // ---------- backup / restore ----------
   async function exportAll() {
     const [corners, readers, books, readings, requests, activeCorner] = await Promise.all([
@@ -141,32 +176,9 @@
     ]);
     const files = [];
     const booksOut = [];
-    for (const b of books) {
-      const bo = { id: b.id, title: b.title, cornerId: b.cornerId ?? null, pageFormat: b.pageFormat || 'single', createdAt: b.createdAt, cover: null, pages: [] };
-      if (b.cover) {
-        const f = 'images/cover-' + b.id + '.' + extOf(b.cover.type);
-        files.push({ name: f, bytes: new Uint8Array(await b.cover.arrayBuffer()) });
-        bo.cover = { file: f, mime: b.cover.type };
-      }
-      for (const p of b.pages || []) {
-        const f = 'images/page-' + p.id + '.' + extOf(p.blob.type);
-        files.push({ name: f, bytes: new Uint8Array(await p.blob.arrayBuffer()) });
-        bo.pages.push({ id: p.id, type: p.type, file: f, mime: p.blob.type });
-      }
-      booksOut.push(bo);
-    }
+    for (const b of books) booksOut.push(await packBook(b, files));
     const readingsOut = [];
-    for (const r of readings) {
-      const { audioBlob, ...meta } = r;   // tolerate any pre-v2 stragglers
-      const blob = (await DB.audio.get(r.id)) || audioBlob || null;
-      let audio = null;
-      if (blob) {
-        const f = 'audio/' + r.id + '.' + audioExt(blob.type);
-        files.push({ name: f, bytes: new Uint8Array(await blob.arrayBuffer()) });
-        audio = { file: f, mime: blob.type };
-      }
-      readingsOut.push({ ...meta, audio });
-    }
+    for (const r of readings) readingsOut.push(await packReading(r, files));
     const manifest = {
       format: 'catherines-corner-backup', formatVersion: 2,
       exportedAt: new Date().toISOString(),
@@ -199,7 +211,8 @@
   // their voices missing.
   function assertComplete(m, map) {
     const missing = [];
-    for (const b of m.books || []) {
+    const books = m.books || (m.book ? [m.book] : []);
+    for (const b of books) {
       if (b.cover && b.cover.file && !map.has(b.cover.file)) missing.push(b.cover.file);
       for (const p of b.pages || []) if (p.file && !map.has(p.file)) missing.push(p.file);
     }
@@ -210,15 +223,29 @@
     }
   }
 
-  async function importFile(file) {
+  // Parse + integrity-check a file WITHOUT writing anything: the UI decides
+  // what to do with what's inside (restore a backup / offer to accept a parcel).
+  async function inspect(file) {
     const map = parseZip(await file.arrayBuffer());
     const mf = map.get('manifest.json');
-    if (!mf) throw new Error('No manifest inside — is this a Catherine’s Corner backup?');
+    if (!mf) throw new Error('No manifest inside — is this a Catherine’s Corner backup or parcel?');
     let m;
     try { m = JSON.parse(new TextDecoder().decode(mf)); }
-    catch (e) { throw new Error('This backup’s manifest can’t be read — the file may be damaged. Nothing was changed.'); }
-    if (m.format !== 'catherines-corner-backup') throw new Error('This isn’t a Catherine’s Corner backup.');
+    catch (e) { throw new Error('This file’s manifest can’t be read — it may be damaged. Nothing was changed.'); }
+    if (m.format !== 'catherines-corner-backup' && m.format !== 'catherines-corner-parcel') {
+      throw new Error('This isn’t a Catherine’s Corner backup or parcel.');
+    }
     assertComplete(m, map);
+    return { manifest: m, map };
+  }
+
+  async function importFile(file) {
+    const { manifest: m, map } = await inspect(file);
+    if (m.format !== 'catherines-corner-backup') throw new Error('That’s a parcel — bring it in from “Keep it safe” so you can see what’s inside first.');
+    return importBackup(m, map);
+  }
+
+  async function importBackup(m, map) {
     const v1 = !(m.formatVersion >= 2);
     const fallbackCornerId = v1 ? await cornerForV1(m) : null;
     const counts = { corners: 0, readers: 0, books: 0, readings: 0, requests: 0 };
@@ -263,5 +290,124 @@
     return counts;
   }
 
-  window.Backup = { exportAll, importFile, audioExt, normalizeAudioFile };
+  // A backup containing only what the OTHER device is missing — the payload
+  // of nearby sync. Same format as a full backup, so the receiving side runs
+  // the exact restore path (corners merge by id/name, rows merge by id) that
+  // device moves have exercised since v1.1.1.
+  async function exportDelta(haveReadingIds, haveBookIds) {
+    const haveR = new Set(haveReadingIds || []);
+    const haveB = new Set(haveBookIds || []);
+    const [corners, readers, books, readings, activeCorner] = await Promise.all([
+      DB.corners.all(), DB.readers.all(), DB.books.all(), DB.readings.all(), DB.corners.active(),
+    ]);
+    const sendReadings = readings.filter(r => !haveR.has(r.id));
+    const referenced = new Set(sendReadings.map(r => r.bookId).filter(Boolean));
+    const sendBooks = books.filter(b => referenced.has(b.id) || !haveB.has(b.id));
+    const files = [];
+    const booksOut = [];
+    for (const b of sendBooks) booksOut.push(await packBook(b, files));
+    const readingsOut = [];
+    for (const r of sendReadings) readingsOut.push(await packReading(r, files));
+    const manifest = {
+      format: 'catherines-corner-backup', formatVersion: 2,
+      exportedAt: new Date().toISOString(),
+      cornerName: activeCorner ? activeCorner.name : null,
+      corners, readers, books: booksOut, readings: readingsOut, requests: [],
+    };
+    files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
+    return { blob: makeZip(files), counts: { readings: sendReadings.length, books: sendBooks.length } };
+  }
+
+  // ---------- parcels: one book (or told story) from one family to another ----------
+  // exportParcel({bookId} | {readingId}, toId?) → {blob, manifest}
+  async function exportParcel({ bookId, readingId, toId }) {
+    const corner = await DB.corners.active();
+    let book = null, readings = [];
+    if (bookId) {
+      book = await DB.books.get(bookId);
+      if (!book) throw new Error('That book couldn’t be found.');
+      readings = await DB.readings.forBook(bookId);
+    } else if (readingId) {
+      const r = await DB.readings.get(readingId);
+      readings = r ? [r] : [];
+    }
+    if (!readings.length) throw new Error('Nothing to send yet — this needs at least one reading.');
+    const files = [];
+    const readerIds = new Set(readings.map(r => r.readerId));
+    const readers = (await DB.readers.all()).filter(r => readerIds.has(r.id));
+    const bookOut = book ? await packBook(book, files) : null;
+    const readingsOut = [];
+    for (const r of readings) readingsOut.push(await packReading(r, files));
+    const manifest = {
+      format: 'catherines-corner-parcel', formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      from: { id: await DB.familyId(), corner: corner ? corner.name : null },
+      to: (toId || '').trim().toUpperCase() || null,
+      readers, book: bookOut, readings: readingsOut,
+    };
+    files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
+    return { blob: makeZip(files), manifest };
+  }
+
+  // Accept a parcel into the ACTIVE corner. Semantics that keep it safe:
+  // readers merge by id then by name (Grandma isn't duplicated); a book or
+  // reading id already living in a SIBLING's corner gets a fresh id here
+  // instead of being stolen; a reading already in this corner is skipped, so
+  // re-accepting the same parcel changes nothing. Every accepted reading
+  // arrives isNew — the child's shelf lights up the way a gift should.
+  async function importParcel(m, map, targetCornerId) {
+    if (!targetCornerId) throw new Error('Make a corner first, then bring the parcel in.');
+    const existingReaders = await DB.readers.all();
+    const readerIdMap = new Map();
+    for (const r of m.readers || []) {
+      if (existingReaders.some(x => x.id === r.id)) { readerIdMap.set(r.id, r.id); continue; }
+      const byName = existingReaders.find(x => (x.name || '').trim().toLowerCase() === (r.name || '').trim().toLowerCase());
+      if (byName) { readerIdMap.set(r.id, byName.id); continue; }
+      await DB.readers.save(r);
+      readerIdMap.set(r.id, r.id);
+    }
+    const bookIdMap = new Map();
+    if (m.book) {
+      const b = m.book;
+      const pages = (b.pages || []).filter(p => map.has(p.file))
+        .map(p => ({ id: p.id, type: p.type, blob: new Blob([map.get(p.file)], { type: p.mime }) }));
+      const cover = b.cover && map.has(b.cover.file) ? new Blob([map.get(b.cover.file)], { type: b.cover.mime }) : null;
+      const existing = await DB.books.get(b.id);
+      if (existing && existing.cornerId === targetCornerId) {
+        const have = new Set((existing.pages || []).map(p => p.id));
+        existing.pages = (existing.pages || []).concat(pages.filter(p => !have.has(p.id)));
+        if (!existing.cover && cover) existing.cover = cover;
+        if (!existing.pageFormat && b.pageFormat) existing.pageFormat = b.pageFormat;
+        await DB.books.save(existing);
+        bookIdMap.set(b.id, b.id);
+      } else {
+        const id = existing ? DB.uid() : b.id;
+        await DB.books.save({
+          id, title: b.title, cornerId: targetCornerId, pageFormat: b.pageFormat || 'single',
+          cover, pages, createdAt: b.createdAt || Date.now(),
+        });
+        bookIdMap.set(b.id, id);
+      }
+    }
+    const counts = { readings: 0 };
+    for (const r of m.readings || []) {
+      const { audio, audioBlob, ...meta } = r;
+      const existing = await DB.readings.get(meta.id);
+      if (existing && existing.cornerId === targetCornerId) continue;   // already accepted
+      if (existing) meta.id = DB.uid();                                 // same id in a sibling's corner
+      meta.cornerId = targetCornerId;
+      meta.bookId = meta.bookId ? (bookIdMap.get(meta.bookId) || meta.bookId) : null;
+      meta.readerId = readerIdMap.get(meta.readerId) || meta.readerId;
+      meta.isNew = true;
+      if (audio && map.has(audio.file)) {
+        await DB.readings.saveWithAudio(meta, new Blob([map.get(audio.file)], { type: audio.mime }));
+      } else {
+        await DB.readings.save(meta);
+      }
+      counts.readings++;
+    }
+    return counts;
+  }
+
+  window.Backup = { exportAll, exportDelta, importFile, inspect, importBackup, exportParcel, importParcel, audioExt, normalizeAudioFile };
 })();

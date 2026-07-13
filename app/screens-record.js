@@ -16,6 +16,7 @@
       audioBlob: null, duration: 0, imported: false,
       pageTurns: [], skipRanges: [], pageFormat: null,
     }, prefill || {});
+    DB.metrics.bump('record.flow_started');
     go('recWho');
   }
 
@@ -215,6 +216,7 @@
       note: '…or bring a recording you already have — a voice memo works beautifully. ' +
         '<a href="#" id="p1help">Step-by-step: getting a voice memo in</a>',
       onAudio: (blob, duration, imported) => {
+        DB.metrics.bump(imported ? 'record.audio_imported' : 'record.audio_recorded');
         S.rec.audioBlob = blob;
         S.rec.duration = duration;
         S.rec.imported = imported;
@@ -310,12 +312,14 @@
       const seg = sec.querySelector('#fmt');
       seg.querySelectorAll('button').forEach(b => {
         b.onclick = () => {
+          if (b.dataset.v === 'spread') DB.metrics.bump('record.spread_chosen');
           S.rec.pageFormat = b.dataset.v;
           seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
           paintStrip(true);
         };
       });
       sec.querySelector('#pgs').onchange = e => {
+        DB.metrics.bump('library.pages_added');
         for (const f of e.target.files) {
           newPages.push({ id: DB.uid(), type: 'book_page', blob: f });
         }
@@ -340,6 +344,7 @@
         const d = dur();
         if (!d) return toast('This recording’s length isn’t known yet — press play for a moment first.');
         sgBtn.disabled = true; sgBtn.textContent = '✨ reading the pages…';
+        DB.metrics.bump('record.suggest_turns_used');
         const weights = await Promise.all(all.map(p => pageInk(p.blob)));
         const total = weights.reduce((a, b) => a + b, 0) || all.length;
         let acc = 0;
@@ -409,7 +414,7 @@
       const t = Math.round(audio.currentTime * 1000);
       if (skipStart == null) { skipStart = t; $sk.textContent = '⏱ …end the skip here'; $sk.classList.add('warm'); }
       else {
-        if (t > skipStart + 200) skips.push({ start: skipStart, end: t });
+        if (t > skipStart + 200) { skips.push({ start: skipStart, end: t }); DB.metrics.bump('record.skip_marked'); }
         skipStart = null; $sk.textContent = '⏱ Start a skip here'; $sk.classList.remove('warm');
         sync();
         paintSkips();
@@ -460,6 +465,7 @@
             existing.pageTurns = turns;
             existing.skipRanges = skips;
             await DB.readings.save(existing);
+            DB.metrics.bump('record.edit_saved');
             toast('Saved — the shelf plays it the new way.');
           }
           leaveEdit();
@@ -482,6 +488,7 @@
         };
         // metadata + voice in one transaction, read back before "saved"
         await DB.readings.saveWithAudio(reading, S.rec.audioBlob);
+        DB.metrics.bump('record.reading_saved');
         // best-effort bookkeeping — never scary once the reading is safe
         try {
           const since = (await DB.settings.get('readingsSinceBackup')) || 0;
@@ -495,6 +502,7 @@
         URL.revokeObjectURL(url);
         go('recDone', { readingId: reading.id });
       } catch (err) {
+        DB.metrics.bump('error.save_failed');
         toast(saveErrorMessage(err));
         btn.disabled = false;
       }
@@ -502,6 +510,7 @@
     saveRow.querySelector('#discard').onclick = () => {
       if (editing) return leaveEdit();
       if (!confirm('Throw this recording away?')) return;
+      DB.metrics.bump('record.discarded');
       audio.pause(); URL.revokeObjectURL(url); S.rec = null; go('home');
     };
 

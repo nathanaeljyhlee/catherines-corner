@@ -18,6 +18,22 @@ owner journey plus the seams that history shows break quietly:
   completeness checks, nothing written), a hostile invite payload renders
   inert, a browser without MediaRecorder degrades to import-only, and a
   broken database opens a calm failure screen instead of a blank page
+- **local usage analytics**: pain-point areas counted through the whole
+  journey (including failed saves), the "what gets used" screen renders with
+  its honesty line and snapshot share, and BOTH live-user migrations are
+  seeded and verified (v1 → v3 and v2 → v3, data untouched, playback intact)
+- **telemetry**: proven dormant while unconfigured (zero requests across the
+  whole suite), delivers events to a fake collector once configured, and the
+  family off switch stops sending while local counting continues
+- **what's new**: the badge appears only for updated devices, opens the
+  walkthrough carousel, and clears once seen
+- **nearby sync**: a real two-device WebRTC merge over loopback — pairing by
+  hand-carried codes, lossless both-ways merge (counts add up exactly),
+  synced audio plays on the receiving side, and a repeat sync carries nothing
+- **parcels**: a full two-family exchange — family A packs a book addressed
+  to family B's Corner ID, B accepts (reader merged once, readings marked
+  new, spread playback works), re-accepting adds nothing, and a mis-addressed
+  parcel warns plainly before anything is tucked in
 
 Run it:
 

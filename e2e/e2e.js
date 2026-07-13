@@ -14,8 +14,14 @@ const CHROMIUM = fs.existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/
 
 // ---------- tiny static server (with a synthetic /blank.html for DB seeding) ----------
 const MIME = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', png: 'image/png', zip: 'application/zip' };
+const countHits = [];   // the fake telemetry collector's inbox
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0].split('#')[0];
+  if (url === '/count') {
+    countHits.push(new URL(req.url, 'http://x').searchParams.get('p'));
+    res.writeHead(200, { 'content-type': 'image/gif' });
+    return res.end();
+  }
   if (url === '/blank.html') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<!doctype html><title>blank</title>ok'); }
   let p = path.join(ROOT, decodeURIComponent(url));
   if (p.endsWith('/')) p += 'index.html';
@@ -114,7 +120,8 @@ async function enterPin(page, digits) {
 
   const browser = await chromium.launch({
     executablePath: CHROMIUM,
-    args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
+    args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required',
+      '--disable-features=WebRtcHideLocalIpsWithMdns'],
   });
   const errors = [];
 
@@ -122,7 +129,8 @@ async function enterPin(page, digits) {
   const ctxA = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['microphone'], acceptDownloads: true });
   const page = await ctxA.newPage();
   page.on('pageerror', e => errors.push('A: ' + e.message));
-  page.on('dialog', d => d.accept(d.type() === 'prompt' ? '' : undefined));
+  let promptAnswer = '';   // what window.prompt returns on page A this moment
+  page.on('dialog', d => d.accept(d.type() === 'prompt' ? promptAnswer : undefined));
 
   step('boot fresh → alpha notice → acknowledge');
   await page.goto(`http://localhost:${PORT}/app/`);
@@ -357,6 +365,224 @@ async function enterPin(page, digits) {
   assert(countAfter === countBefore + 1, 'retry after freeing space saves exactly once');
   await page.click('#home');
 
+  step('ANALYTICS: pain-point areas counted locally; usage screen + snapshot share');
+  const m = await page.evaluate(async () => {
+    const rows = await DB.metrics.all();
+    return Object.fromEntries(rows.map(r => [r.key, r.n]));
+  });
+  assert((m['record.flow_started'] || 0) >= 2, 'record flows counted (got ' + m['record.flow_started'] + ')');
+  assert((m['record.reading_saved'] || 0) >= 1, 'saved readings counted');
+  assert((m['record.audio_recorded'] || 0) >= 1, 'live recordings counted');
+  assert((m['error.save_failed'] || 0) >= 1, 'failed saves counted as a pain point');
+  assert((m['safety.restore_done'] || 0) >= 2, 'restores counted');
+  assert((m['record.edit_saved'] || 0) >= 1, 'edit flow counted');
+  await page.click('#usagelink'); // we are on grown-up home after the quota retry
+  await page.waitForSelector('h1:has-text("What gets used")');
+  assert((await page.textContent('body')).includes('kept on this device'), 'usage screen carries the honesty line');
+  assert(await page.$('.card .kicker:has-text("recording")'), 'recording area rendered');
+  assert(await page.$('.card .kicker:has-text("rough edges")'), 'error area rendered');
+  assert(await page.$('#share:not([disabled])'), 'snapshot share offered');
+  await page.click('.back'); // usage → home
+
+  step('TELEMETRY: dormant by default; pings the maker only when configured; off switch respected');
+  assert(countHits.length === 0, 'no telemetry left any device while unconfigured (got ' + countHits.length + ' hits)');
+  await page.evaluate(origin => Telemetry.configure(origin + '/count'), `http://localhost:${PORT}`);
+  await page.evaluate(() => DB.metrics.bump('e2e.telemetry_ping'));
+  await page.waitForFunction(() => true); // let the pixel fire
+  for (let i = 0; i < 40 && !countHits.includes('/e2e.telemetry_ping'); i++) await sleep(100);
+  assert(countHits.includes('/e2e.telemetry_ping'), 'configured telemetry delivers the event to the collector');
+  const before = countHits.length;
+  await page.evaluate(() => Telemetry.setOff(true));
+  await page.evaluate(() => DB.metrics.bump('e2e.telemetry_muted'));
+  await sleep(800);
+  assert(!countHits.includes('/e2e.telemetry_muted') && countHits.length === before, 'the family off switch stops all sending');
+  const localStillCounts = await page.evaluate(async () => (await DB.metrics.all()).some(r => r.key === 'e2e.telemetry_muted'));
+  assert(localStillCounts, 'local counting continues even when sending is off');
+  // usage screen discloses + offers the switch when configured
+  await page.click('#usagelink');
+  await page.waitForSelector('.card .kicker:has-text("sharing with the maker")');
+  assert(await page.$('#ttoggle'), 'off/on switch rendered');
+  await page.evaluate(() => { Telemetry.configure(''); return Telemetry.setOff(false); }); // back to dormant for the rest
+  await page.click('.back'); // usage → home
+
+  step('PARCELS: family A packs a book addressed to family B\'s Corner ID');
+  const ctxE = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
+  const pageE = await ctxE.newPage();
+  pageE.on('pageerror', e => errors.push('E: ' + e.message));
+  pageE.on('dialog', d => d.accept(''));
+  await pageE.goto(`http://localhost:${PORT}/app/`);
+  await pageE.click('#ack');
+  await pageE.click('#gate');
+  await enterPin(pageE, '5678'); await enterPin(pageE, '5678');
+  await pageE.fill('#nm', 'Ben');
+  await pageE.click('#save');
+  const benId = await pageE.evaluate(() => DB.familyId());
+  assert(/^CC-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(benId), 'Corner ID has the shareable shape (got ' + benId + ')');
+  // family A packs Goodnight Moon for Ben
+  await page.click('.home-card:has-text("The library")');
+  await page.click('.rowitem:has-text("Goodnight Moon")');
+  promptAnswer = benId.toLowerCase();   // sloppy typing is normalized on pack
+  const [parcelDl] = await Promise.all([
+    page.waitForEvent('download'),
+    page.click('#parcel'),
+  ]);
+  promptAnswer = '';
+  const parcelPath = path.join(TMP, 'parcel.zip');
+  await parcelDl.saveAs(parcelPath);
+  assert(fs.statSync(parcelPath).size > 1000, 'parcel has real content');
+  await page.click('.back'); await page.click('.back'); // book → library → home
+
+  step('PARCELS: family B accepts — book, voices and pages land on Ben\'s shelf, marked new');
+  await pageE.click('.home-card:has-text("Keep it safe")');
+  await pageE.setInputFiles('#restorefile', parcelPath);
+  await pageE.waitForSelector('h1:has-text("Goodnight Moon")');
+  assert((await pageE.textContent('body')).includes('✓ addressed to this corner'), 'address matches — no warning');
+  await pageE.click('#accept');
+  await pageE.waitForSelector('h1:has-text("The library")');
+  assert(await pageE.$('.rowitem:has-text("Goodnight Moon")'), 'book in Ben\'s library');
+  const benState = await pageE.evaluate(async () => {
+    const readers = await DB.readers.all();
+    const corner = await DB.corners.active();
+    const readings = await DB.readings.all(corner.id);
+    return { dads: readers.filter(r => r.name === 'Dad').length, readings: readings.length, allNew: readings.every(r => r.isNew) };
+  });
+  assert(benState.dads === 1, 'reader Dad traveled with the parcel, once');
+  assert(benState.readings >= 1 && benState.allNew, 'accepted readings arrive marked new');
+  await pageE.click('#to-kid');
+  await pageE.waitForSelector('.tile:has-text("Goodnight Moon") .badge-new');
+  await pageE.click('.tile:has-text("Goodnight Moon")');
+  await pageE.waitForSelector('.p-stage.spread');
+  await pageE.click('#pp');
+  await pageE.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+
+  step('PARCELS: re-accepting is a no-op; a mis-addressed parcel warns before it tucks in');
+  await pageE.click('.back');
+  await pageE.click('#gate'); await enterPin(pageE, '5678');
+  await pageE.click('.home-card:has-text("Keep it safe")');
+  await pageE.setInputFiles('#restorefile', parcelPath);
+  await pageE.waitForSelector('#accept');
+  await pageE.click('#accept');
+  await pageE.waitForSelector('.toast.show:has-text("already on the shelf")');
+  const benCount2 = await pageE.evaluate(async () => (await DB.readings.all((await DB.corners.active()).id)).length);
+  assert(benCount2 === benState.readings, 're-accept adds nothing');
+  await ctxE.close();
+  // family A opens the SAME parcel (addressed to Ben, not to A) → warning
+  await page.click('.home-card:has-text("Keep it safe")');
+  await page.setInputFiles('#restorefile', parcelPath);
+  await page.waitForSelector('#accept');
+  assert((await page.textContent('body')).includes('addressed to a different corner') ||
+         (await page.textContent('body')).includes('was addressed to'), 'mis-addressed parcel warns plainly');
+  await page.click('#nope'); // decline
+  await page.waitForSelector('h1:has-text("Keep it safe")');
+  assert((await page.textContent('body')).includes('your corner id'.toLowerCase()) || await page.$('#fid'), 'Corner ID surfaced under Keep it safe');
+  await page.click('.back'); // safety → home
+
+  step('WHAT\'S NEW: badge appears after an update, walkthrough carousel opens, badge clears');
+  assert(!(await page.$('#newbadge')), 'no badge when this version has been seen');
+  await page.evaluate(() => DB.settings.set('seenVersion', '1.7.1'));   // simulate a device that updated
+  await page.reload();
+  await page.waitForSelector('#newbadge');
+  await page.click('#newbadge');
+  await page.waitForSelector('h1:has-text("What’s new")');
+  const slideCount = await page.$$('.carousel .slide').then(x => x.length);
+  assert(slideCount >= 5, 'walkthrough carousel has slides (got ' + slideCount + ')');
+  assert((await page.textContent('.carousel')).includes('Sync nearby') || (await page.textContent('.carousel')).includes('sync nearby'), 'newest feature leads');
+  await page.click('.back');
+  await page.waitForSelector('.shelf-head');   // kid mode → back to the shelf
+  assert(!(await page.$('#newbadge')), 'badge gone once the walkthrough was seen');
+
+  step('NEARBY SYNC: two devices pair by hand-carried codes and merge over the wire');
+  const ctxG = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['microphone'] });
+  const pageG = await ctxG.newPage();
+  pageG.on('pageerror', e => errors.push('G: ' + e.message));
+  pageG.on('dialog', d => d.accept(''));
+  await pageG.goto(`http://localhost:${PORT}/app/`);
+  await pageG.click('#ack');
+  await pageG.click('#gate');
+  await enterPin(pageG, '9999'); await enterPin(pageG, '9999');
+  await pageG.fill('#nm', 'Zoe');
+  await pageG.click('#save');
+  // Zoe's device records its own told story, so the merge is genuinely two-way
+  await pageG.click('.home-card:has-text("The people who read")');
+  await pageG.fill('#nm', 'Mum'); await pageG.click('#add');
+  await pageG.waitForSelector('.rowitem:has-text("Mum")');
+  await pageG.click('.back');
+  await pageG.click('.home-card:has-text("Record a reading")');
+  await pageG.click('.pick:has-text("Mum")');
+  await pageG.click('#told');
+  await pageG.fill('#st', 'Zoe and the Comet');
+  await pageG.click('#next');
+  await pageG.click('#rec'); await sleep(1200); await pageG.click('#stop');
+  await pageG.waitForSelector('#sk');
+  await pageG.click('#save');
+  await pageG.waitForSelector('.rec-hero:has-text("reading is ready")');
+  await pageG.click('#home');
+  const preSync = {
+    a: await page.evaluate(async () => (await DB.readings.all()).length),
+    g: await pageG.evaluate(async () => (await DB.readings.all()).length),
+  };
+  // device A starts and shows its code
+  await page.click('#gate'); await enterPin(page, '1234');
+  await page.click('.home-card:has-text("Keep it safe")');
+  await page.click('#syncbtn');
+  await page.click('#mkoffer');
+  await page.waitForFunction(() => { const n = document.querySelector('#mycode'); return n && n.value.length > 50; });
+  const offerCode = await page.$eval('#mycode', n => n.value);
+  // device G answers with its reply code
+  await pageG.click('.home-card:has-text("Keep it safe")');
+  await pageG.click('#syncbtn');
+  await pageG.click('#haveoffer');
+  await pageG.fill('#theirs', offerCode);
+  await pageG.click('#accept');
+  await pageG.waitForFunction(() => { const n = document.querySelector('#mycode'); return n && n.value.length > 50; });
+  const answerCode = await pageG.$eval('#mycode', n => n.value);
+  // back on A: enter the reply → channel opens → both merge
+  await page.fill('#theirs', answerCode);
+  await page.click('#accept');
+  await page.waitForSelector('.sync-done', { timeout: 30000 });
+  await pageG.waitForSelector('.sync-done', { timeout: 30000 });
+  const postSync = {
+    a: await page.evaluate(async () => (await DB.readings.all()).length),
+    g: await pageG.evaluate(async () => (await DB.readings.all()).length),
+  };
+  assert(postSync.a === postSync.g, 'both devices hold the same number of readings (' + postSync.a + ' vs ' + postSync.g + ')');
+  assert(postSync.a === preSync.a + preSync.g, 'merge is lossless: ' + preSync.a + ' + ' + preSync.g + ' = ' + postSync.a);
+  const gGot = await pageG.evaluate(async () => {
+    const corners = await DB.corners.all();
+    const mei = corners.find(c => c.name === 'Mei');
+    const books = await DB.books.all(mei && mei.id);
+    return { hasMei: !!mei, hasMoon: books.some(b => b.title === 'Goodnight Moon'), corners: corners.length };
+  });
+  assert(gGot.hasMei && gGot.hasMoon, "Zoe's device received Mei's corner and book");
+  const aGot = await page.evaluate(async () => {
+    const corners = await DB.corners.all();
+    const zoe = corners.find(c => c.name === 'Zoe');
+    const told = zoe ? await DB.readings.told(zoe.id) : [];
+    return { hasZoe: !!zoe, hasComet: told.some(r => r.title === 'Zoe and the Comet') };
+  });
+  assert(aGot.hasZoe && aGot.hasComet, "device A received Zoe's corner and told story");
+  // synced audio actually plays on the receiving side
+  await page.click('#home2');            // A: done → home
+  await pageG.click('#home2');           // G: done → home
+  await pageG.click('#to-kid');
+  await pageG.waitForSelector('.corner-pills');
+  await pageG.click('.corner-pill:has-text("Mei")');
+  await pageG.click('.tile:has-text("Goodnight Moon")');
+  await pageG.waitForSelector('.p-stage.spread');
+  await pageG.click('#pp');
+  await pageG.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  // and syncing again finds nothing to do (idempotent) — checked via delta counts
+  const deltaCheck = await pageG.evaluate(async invA => {
+    const { counts } = await Backup.exportDelta(invA.r, invA.b);
+    return counts;
+  }, await page.evaluate(async () => {
+    const [r, b] = await Promise.all([DB.readings.all(), DB.books.all()]);
+    return { r: r.map(x => x.id), b: b.map(x => x.id) };
+  }));
+  assert(deltaCheck.readings === 0 && deltaCheck.books === 0, 'a second sync would have nothing to carry');
+  await ctxG.close();
+  // A's "done" button already landed it on grown-up home — ready for the next steps
+
   step('HARDEN: a corrupted backup zip is refused whole — nothing written');
   const corrupted = fs.readFileSync(zipPath);
   corrupted[Math.floor(corrupted.length * 0.4)] ^= 0xFF; // bit-rot one byte in an entry
@@ -479,6 +705,61 @@ async function enterPin(page, digits) {
   await pageB.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
 
   await ctxB.close();
+
+  // ============ PART C: v2 → v3 migration (what LIVE users on v1.7.1 hit) ============
+  const ctxD = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const pageD = await ctxD.newPage();
+  pageD.on('pageerror', e => errors.push('D: ' + e.message));
+
+  step('seed a real v2 database (corners + audio store, no metrics) → v3 adds counting only');
+  await pageD.goto(`http://localhost:${PORT}/blank.html`);
+  await pageD.evaluate(async b64 => {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const db = await new Promise((res, rej) => {
+      const req = indexedDB.open('catherines-corner', 2);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        d.createObjectStore('readers', { keyPath: 'id' });
+        d.createObjectStore('books', { keyPath: 'id' });
+        const s = d.createObjectStore('readings', { keyPath: 'id' });
+        s.createIndex('byBook', 'bookId'); s.createIndex('byReader', 'readerId');
+        d.createObjectStore('requests', { keyPath: 'id' });
+        d.createObjectStore('settings', { keyPath: 'key' });
+        d.createObjectStore('corners', { keyPath: 'id' });
+        d.createObjectStore('audio', { keyPath: 'id' });
+      };
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    await new Promise((res, rej) => {
+      const t = db.transaction(['readers', 'books', 'readings', 'settings', 'corners', 'audio'], 'readwrite');
+      t.objectStore('settings').put({ key: 'alphaAck', value: 1 });
+      t.objectStore('settings').put({ key: 'activeCornerId', value: 'c-mei' });
+      t.objectStore('corners').put({ id: 'c-mei', name: 'Mei', createdAt: 1 });
+      t.objectStore('readers').put({ id: 'r-dad', name: 'Dad', relationship: 'Dad', color: '#34557A', createdAt: 1 });
+      t.objectStore('books').put({ id: 'b-v2', title: 'The v2 Book', cornerId: 'c-mei', pageFormat: 'single', cover: null, pages: [], createdAt: 1 });
+      t.objectStore('readings').put({ id: 'rd-v2', bookId: 'b-v2', readerId: 'r-dad', cornerId: 'c-mei', title: null, episodeIndex: null,
+        duration: 1, imported: false, pageTurns: [], skipRanges: [], isNew: false, createdAt: 2 });
+      t.objectStore('audio').put({ id: 'rd-v2', blob: new Blob([bytes], { type: 'audio/wav' }) });
+      t.oncomplete = res; t.onerror = () => rej(t.error);
+    });
+    db.close();
+  }, wavB64);
+  await pageD.goto(`http://localhost:${PORT}/app/`);
+  await pageD.waitForSelector('.tile:has-text("The v2 Book")');
+  const v2mig = await pageD.evaluate(async () => {
+    await DB.metrics.bump('e2e.migration_probe');
+    const rows = await DB.metrics.all();
+    const blob = await DB.audio.get('rd-v2');
+    return { metricsWork: rows.some(r => r.key === 'e2e.migration_probe'), blobSize: blob ? blob.size : 0 };
+  });
+  assert(v2mig.metricsWork, 'metrics store created by v2→v3 upgrade and counting works');
+  assert(v2mig.blobSize > 4000, 'v2 data untouched by the upgrade');
+  await pageD.click('.tile:has-text("The v2 Book")');
+  await pageD.waitForSelector('.p-stage');
+  await pageD.click('#pp');
+  await pageD.waitForFunction(() => window.App.player.audio && window.App.player.audio.currentTime > 0.2);
+  await ctxD.close();
   await browser.close();
   server.close();
 

@@ -28,7 +28,7 @@
       const pills = el('<div class="corner-pills"></div>');
       for (const c of ctx.corners.slice().sort((a, b) => a.createdAt - b.createdAt)) {
         const p = el('<button class="corner-pill' + (cornerId === c.id ? ' on' : '') + '">' + esc(c.name) + '</button>');
-        p.onclick = async () => { await DB.corners.setActive(c.id); go('shelf'); };
+        p.onclick = async () => { DB.metrics.bump('corners.switched'); await DB.corners.setActive(c.id); go('shelf'); };
         pills.appendChild(p);
       }
       root.appendChild(pills);
@@ -173,6 +173,8 @@
     const spread = !!(book && book.pageFormat === 'spread' && pages.length);
 
     if (reading.isNew) { reading.isNew = false; await DB.readings.save(reading); }
+    DB.metrics.bump('play.started');
+    if (spread) DB.metrics.bump('play.spread_book');
 
     const title = book ? book.title : (reading.title || 'A bedtime story');
     const sub = (reading.episodeIndex != null ? 'Chapter ' + reading.episodeIndex + ' · ' : '') +
@@ -242,6 +244,7 @@
     makeScrubber($track, audio, dur, () => paintNow(true));
     audio.onended = async () => {
       $pp.textContent = '▶';
+      DB.metrics.bump('play.completed');
       // the calm close — no autoplay, no feed
       const next = reading.episodeIndex != null
         ? (await DB.readings.forBook(reading.bookId)).find(r => r.readerId === reading.readerId && r.episodeIndex === reading.episodeIndex + 1)
@@ -257,7 +260,7 @@
         '</div></div>');
       stage.appendChild(calm);
       calm.querySelector('#again').onclick = () => { renderStage(0); lastIdx = 0; audio.currentTime = 0; audio.play(); $pp.textContent = '❘❘'; tick(); };
-      if (next) calm.querySelector('#next').onclick = () => go('player', { readingId: next.id });
+      if (next) calm.querySelector('#next').onclick = () => { DB.metrics.bump('play.next_chapter'); go('player', { readingId: next.id }); };
       calm.querySelector('#shelf2').onclick = () => go('shelf');
     };
   });
@@ -401,6 +404,7 @@
       cv.toBlob(async blob => {
         book.cover = blob;
         await DB.books.save(book);
+        DB.metrics.bump('library.cover_designed');
         dropURL('cover-' + book.id);
         toast('The artist’s cover is on the shelf. 🖍️');
         leave();

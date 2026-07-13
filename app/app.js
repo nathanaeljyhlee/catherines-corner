@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.7.1';
+  const APP_VERSION = '1.10.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -60,6 +60,7 @@
       const name = decodeURIComponent(res.headers.get('x-name') || 'shared recording');
       const blob = Backup.normalizeAudioFile(new File([raw], name, { type: raw.type }));
       S.shared = { blob, name };
+      DB.metrics.bump('record.shared_arrived');
       toast('A recording arrived 🎙 — open “for grown-ups” to turn it into a reading.');
     } catch (e) { /* inbox is best-effort */ }
   }
@@ -113,8 +114,12 @@
       : S.mode === 'adult'
         ? '<span class="mode-pill">alpha &middot; grown-up mode &middot; <button id="to-kid">back to kid mode</button></span>'
         : '<span class="mode-pill">alpha · early test build</span>';
-    const bar = el('<div class="topbar"><span class="mark"><b>Catherine’s</b> Corner</span>' + pill + '</div>');
+    // ✨ appears whenever the app updated since this device last looked.
+    const unseen = !isGuest && window.WhatsNew && await WhatsNew.hasUnseen();
+    const bar = el('<div class="topbar"><span class="mark"><b>Catherine’s</b> Corner</span>' +
+      (unseen ? '<button class="newpill" id="newbadge" title="see what changed">✨ new</button>' : '') + pill + '</div>');
     $app.appendChild(bar);
+    if (unseen) bar.querySelector('#newbadge').onclick = () => go('whatsnew');
     if (!isGuest && S.mode === 'adult') bar.querySelector('#to-kid').onclick = () => { S.mode = 'kid'; go('shelf'); };
 
     const fn = screens[S.screen] || screens.shelf;
@@ -139,7 +144,11 @@
       '<p class="screen-sub" style="margin-bottom:14px">Catherine’s Corner is in <b>alpha</b> — you’re testing it early, and the honest state of things is:</p>' +
       '<div class="stack">' +
       '<div class="rowitem"><span style="font-size:19px">📍</span><div class="grow"><div class="t">Recordings live only on this device</div>' +
-      '<div class="d">In this browser, on this phone or tablet. Nothing is uploaded anywhere.</div></div></div>' +
+      '<div class="d">In this browser, on this phone or tablet. Your recordings are never uploaded anywhere.</div></div></div>' +
+      (window.Telemetry && Telemetry.configured()
+        ? '<div class="rowitem"><span style="font-size:19px">📊</span><div class="grow"><div class="t">Anonymous usage counts help fix rough spots</div>' +
+          '<div class="d">Simple counts of what gets used — never recordings, names, or titles — reach the maker. Turn it off any time: for grown-ups → What gets used.</div></div></div>'
+        : '') +
       '<div class="rowitem"><span style="font-size:19px">⚠️</span><div class="grow"><div class="t">They can be lost</div>' +
       '<div class="d">Clearing this browser’s data, deleting the app, or losing the device deletes the recordings with it.</div></div></div>' +
       '<div class="rowitem"><span style="font-size:19px">🗄️</span><div class="grow"><div class="t">Back up anything you’d hate to lose</div>' +
@@ -152,6 +161,7 @@
     root.appendChild(card);
     card.querySelector('#ack').onclick = async () => {
       await DB.settings.set('alphaAck', Date.now());
+      await DB.settings.set('seenVersion', APP_VERSION);   // fresh install: everything is new, no badge
       S.mode = 'kid';
       go('shelf');
     };

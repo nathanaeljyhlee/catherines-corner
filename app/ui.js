@@ -201,6 +201,7 @@
         $dot.classList.add('live'); $stat.textContent = 'recording — just read';
         $rec.style.display = 'none'; $pause.style.display = ''; $stop.style.display = '';
       } catch (err) {
+        if (window.DB) DB.metrics.bump('error.mic_denied');
         toast(err && err.name === 'NotFoundError'
           ? 'No microphone could be found on this device — import a voice memo instead.'
           : 'The microphone said no — check permissions and try again.');
@@ -238,6 +239,7 @@
         toast('Couldn’t read that recording’s length here — it’s kept as-is and will play where the format is supported.');
         opts.onAudio(blob, 0, true);
       } else {
+        if (window.DB) DB.metrics.bump('error.import_rejected');
         e.target.value = '';
         toast('That file doesn’t look like a recording — pick an audio file (a voice memo works).');
       }

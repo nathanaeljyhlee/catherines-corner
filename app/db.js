@@ -13,7 +13,7 @@
      under it) the first time the new code opens the database. */
 
 const DB_NAME = 'catherines-corner';
-const DB_VERSION = 2;
+const DB_VERSION = 3;   // v3 adds the metrics store (usage counters — counts only, never content)
 
 let _db = null;
 
@@ -76,6 +76,7 @@ function openDB() {
       if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
       if (!db.objectStoreNames.contains('corners')) db.createObjectStore('corners', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('metrics')) db.createObjectStore('metrics', { keyPath: 'key' });
       if (e.oldVersion >= 1 && e.oldVersion < 2) migrateV1(req.transaction);
     };
     req.onsuccess = () => { _db = req.result; resolve(_db); };
@@ -202,6 +203,54 @@ const DBAPI = {
   settings: {
     get: async key => { const row = await getOne('settings', key); return row ? row.value : null; },
     set: (key, value) => put('settings', { key, value }),
+  },
+  // This install's shareable identity — the "account id" until real accounts
+  // exist (ADR-001). Family give it to each other so parcels can be addressed;
+  // it names the install, never a person, and travels nowhere on its own.
+  async familyId() {
+    let id = await DBAPI.settings.get('familyId');
+    if (!id) {
+      const chunk = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+      id = 'CC-' + chunk() + '-' + chunk();
+      await DBAPI.settings.set('familyId', id);
+    }
+    return id;
+  },
+  // Usage counters, so pain points show up as numbers instead of guesses.
+  // Counts only — event names like 'record.audio_imported', never recordings,
+  // names, or titles. Everything stays on this device; a grown-up can share a
+  // snapshot from the "what gets used" screen. Counting must never break the
+  // app: bump() is fire-and-forget and swallows its own failures.
+  metrics: {
+    async bump(key) {
+      try {
+        const db = await openDB();
+        await new Promise((resolve, reject) => {
+          const t = db.transaction('metrics', 'readwrite');
+          const s = t.objectStore('metrics');
+          const req = s.get(key);
+          req.onsuccess = () => {
+            const now = Date.now();
+            const day = new Date(now).toISOString().slice(0, 10);
+            const row = req.result || { key, n: 0, first: now, days: {} };
+            row.n++; row.last = now;
+            row.days[day] = (row.days[day] || 0) + 1;
+            const dayKeys = Object.keys(row.days).sort();     // keep a 60-day window
+            while (dayKeys.length > 60) delete row.days[dayKeys.shift()];
+            s.put(row);
+          };
+          t.oncomplete = resolve;
+          t.onerror = () => reject(t.error);
+        });
+      } catch (e) { /* a lost count is fine; a broken flow is not */ }
+    },
+    all: () => getAll('metrics'),
+    reset: () => openDB().then(db => new Promise((resolve, reject) => {
+      const t = db.transaction('metrics', 'readwrite');
+      t.objectStore('metrics').clear();
+      t.oncomplete = resolve;
+      t.onerror = () => reject(t.error);
+    })),
   },
   // Ask the browser to treat the corner as must-keep, and report honestly
   // whether it agreed (surfaced under "Keep it safe").
