@@ -22,15 +22,11 @@
   const { el, esc, toast } = UI;
   const { S, go, register } = App;
 
-  // ---------- pairing-code codec (minimal SDP) ----------
-  function b64u(obj) {
-    return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  }
+  // ---------- pairing-code codec (minimal SDP over the shared b64url JSON) ----------
+  const b64u = obj => UI.b64uEncode(obj);
   function unb64u(str) {
-    try {
-      const p = JSON.parse(decodeURIComponent(escape(atob(String(str).trim().replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/')))));
-      return p && typeof p.u === 'string' && typeof p.p === 'string' && typeof p.f === 'string' && Array.isArray(p.c) ? p : null;
-    } catch (e) { return null; }
+    const p = UI.b64uDecode(str);
+    return p && typeof p.u === 'string' && typeof p.p === 'string' && typeof p.f === 'string' && Array.isArray(p.c) ? p : null;
   }
   function extract(sdp) {
     const get = re => (sdp.match(re) || [])[1] || '';
@@ -295,8 +291,6 @@
 
     roleChooser();
 
-    const back = el('<button class="back">‹ keep it safe</button>');
-    back.onclick = () => { closeSession(); go('safety'); };
-    root.appendChild(back);
+    root.appendChild(UI.backLink('‹ keep it safe', () => { closeSession(); go('safety'); }));
   });
 })();

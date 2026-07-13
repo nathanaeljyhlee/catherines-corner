@@ -57,6 +57,40 @@
     return '<span class="av ' + (cls || '') + '" style="background:' + reader.color + '">' + esc((reader.name || '?')[0].toUpperCase()) + '</span>';
   }
 
+  // The one back-link every screen ends with.
+  function backLink(labelHtml, onClick) {
+    const b = el('<button class="back">' + labelHtml + '</button>');
+    b.onclick = onClick;
+    return b;
+  }
+
+  // Filenames that survive every OS's picker.
+  function safeName(s) { return String(s).replace(/[/\\?%*:|"<>]/g, '-'); }
+
+  // Hand a file to the browser's downloader; owns (and later revokes) the
+  // object URL when given a Blob, borrows the URL when given a string.
+  function downloadBlob(source, fname) {
+    const a = document.createElement('a');
+    const owned = source instanceof Blob;
+    a.href = owned ? URL.createObjectURL(source) : source;
+    a.download = safeName(fname);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    if (owned) setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  }
+
+  // Base64url JSON — the codec under invite links and sync pairing codes.
+  function b64uEncode(obj) {
+    return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64uDecode(str) {
+    try {
+      const b64 = String(str).trim().replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(decodeURIComponent(escape(atob(b64))));
+    } catch (e) { return null; }
+  }
+
   // Hand mail/messages links to the OS the same way a tapped
   // <a href="mailto:…"> would — the pattern phones handle best.
   function launchHref(href) {
@@ -144,6 +178,53 @@
       a.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(isFinite(a.duration) ? a.duration : 0); };
       a.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
     });
+  }
+
+  // ---------- the transport bar ----------
+  // One play/scrub bar for everywhere audio plays (the kid player, pass 2):
+  // play/pause, the finger-sized scrubber, optional ±5s nudges, and a paint
+  // loop that runs only while this audio is the app's active player — so
+  // navigating anywhere else always stops it.
+  // opts: { bare, nudge, durFallback(), onPaint(userSeek), onFrame(), onEnded() }
+  function playerBar(audio, opts) {
+    opts = opts || {};
+    const root = el(
+      '<div class="p-bar"' + (opts.bare ? ' style="border-top:none"' : '') + '>' +
+      '<button class="p-play" id="pp" aria-label="play">▶</button>' +
+      (opts.nudge
+        ? '<button class="p-nudge" data-b5 aria-label="back five seconds">↺5</button>' +
+          '<button class="p-nudge" data-f5 aria-label="forward five seconds">5↻</button>'
+        : '') +
+      '<div class="p-track"><i></i></div><span class="p-time">0:00</span></div>');
+    const $pp = root.querySelector('.p-play'), $fill = root.querySelector('.p-track i');
+    const $time = root.querySelector('.p-time'), $track = root.querySelector('.p-track');
+    const dur = () => (audio.duration && isFinite(audio.duration)) ? audio.duration
+      : (opts.durFallback ? opts.durFallback() : 0);
+    function paint(userSeek) {
+      const d = dur();
+      $fill.style.width = d ? (audio.currentTime / d * 100) + '%' : '0%';
+      $time.textContent = fmt(audio.currentTime) + (d ? ' / ' + fmt(d) : '');
+      if (opts.onPaint) opts.onPaint(!!userSeek);
+    }
+    function tickLoop() {
+      if (window.App.player.audio !== audio) return;   // another screen took over
+      if (opts.onFrame) opts.onFrame();
+      paint(false);
+      window.App.player.raf = requestAnimationFrame(tickLoop);
+    }
+    function start() { audio.play(); $pp.textContent = '❘❘'; tickLoop(); }
+    $pp.onclick = () => {
+      if (audio.paused) start();
+      else { audio.pause(); $pp.textContent = '▶'; }
+    };
+    makeScrubber($track, audio, dur, () => paint(true));
+    if (opts.nudge) {
+      root.querySelector('[data-b5]').onclick = () => { audio.currentTime = Math.max(0, audio.currentTime - 5); paint(false); };
+      root.querySelector('[data-f5]').onclick = () => { const d = dur(); audio.currentTime = d ? Math.min(d, audio.currentTime + 5) : audio.currentTime + 5; paint(false); };
+    }
+    audio.onended = () => { $pp.textContent = '▶'; if (opts.onEnded) opts.onEnded(); };
+    window.App.player.audio = audio;
+    return { el: root, paint, start, dur };
   }
 
   // ---------- audio capture panel ----------
@@ -251,7 +332,8 @@
     IS_IOS, AV_COLORS,
     blobURL, dropURL, clearURLCache,
     fmt, esc, el, toast, avatar, launchHref,
+    backLink, safeName, downloadBlob, b64uEncode, b64uDecode,
     currentPageIndex, applySkips, makeScrubber, pageInk, probeDuration,
-    capturePanel,
+    capturePanel, playerBar,
   };
 })();

@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.11.0';
+  const APP_VERSION = '1.11.1';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -165,7 +165,7 @@
     root.appendChild(card);
     card.querySelector('#ack').onclick = async () => {
       await DB.settings.set('alphaAck', Date.now());
-      await DB.settings.set('seenVersion', APP_VERSION);   // fresh install: everything is new, no badge
+      await WhatsNew.markSeen();   // fresh install: everything is new, no badge
       S.mode = 'kid';
       go('shelf');
     };

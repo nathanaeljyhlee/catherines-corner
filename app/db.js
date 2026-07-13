@@ -134,6 +134,13 @@ const DBAPI = {
     get: id => getOne('corners', id),
     save: c => put('corners', c),
     remove: id => del('corners', id),
+    // The one way a corner comes to exist: created, then made active.
+    async create(name) {
+      const corner = { id: uid(), name: String(name).trim().slice(0, 30), createdAt: Date.now() };
+      await put('corners', corner);
+      await DBAPI.settings.set('activeCornerId', corner.id);
+      return corner;
+    },
     // The corner whose shelf is showing. Falls back to the first corner and
     // heals the pointer, so a deleted/never-set active id can't strand the UI.
     async active() {

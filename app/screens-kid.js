@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const { el, esc, fmt, toast, avatar, blobURL, dropURL, currentPageIndex, applySkips, makeScrubber } = UI;
+  const { el, esc, fmt, toast, avatar, blobURL, dropURL, currentPageIndex, applySkips, playerBar, backLink } = UI;
   const { S, go, register, player } = App;
 
   // =========================================================
@@ -127,9 +127,7 @@
       stack.appendChild(p);
     }
     root.appendChild(stack);
-    const back = el('<button class="back">‹ back to the shelf</button>');
-    back.onclick = () => go('shelf');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ back to the shelf', () => go('shelf')));
   });
 
   register('episodes', async function kidEpisodes(root) {
@@ -154,9 +152,7 @@
       stack.appendChild(p);
     }
     root.appendChild(stack);
-    const back = el('<button class="back">‹ back to the shelf</button>');
-    back.onclick = () => go('shelf');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ back to the shelf', () => go('shelf')));
   });
 
   // =========================================================
@@ -186,17 +182,11 @@
       avatar(reader) + '</div>' +
       '<div class="p-stage' + (spread ? ' spread' : '') + '" id="stage"></div>' +
       '<div class="p-cap" id="cap" style="display:none"></div>' +
-      '<div class="p-bar">' +
-      '<button class="p-play" id="pp" aria-label="play">▶</button>' +
-      '<div class="p-track" id="track"><i id="fill"></i></div>' +
-      '<span class="p-time" id="time">0:00</span>' +
-      '</div></div>');
+      '</div>');
     root.appendChild(wrap);
     // Spread pages are wide — let the player breathe in landscape.
     if (spread) document.getElementById('app').classList.add('wide');
-    const back = el('<button class="back">‹ back to the shelf</button>');
-    back.onclick = () => go('shelf');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ back to the shelf', () => go('shelf')));
 
     const stage = wrap.querySelector('#stage');
     const TAGS = { book_page: '📖 from the book', child_art: '🖍️ drawn for this page', family_photo: '📷 a family photo' };
@@ -218,11 +208,7 @@
     renderStage(0);
 
     const audio = new Audio(blobURL('aud-' + reading.id, audioBlob));
-    player.audio = audio; player.reading = reading;
-    const $pp = wrap.querySelector('#pp'), $fill = wrap.querySelector('#fill'), $time = wrap.querySelector('#time'), $track = wrap.querySelector('#track');
     let lastIdx = 0;
-
-    function dur() { return audio.duration && isFinite(audio.duration) ? audio.duration : (reading.duration || 0); }
 
     // Read-along words: the current page's text sits under the picture and
     // lights up gently across the page's stretch of the recording.
@@ -241,54 +227,47 @@
       }
       const turns = reading.pageTurns || [];
       const start = idx === 0 ? 0 : (turns[idx - 1] || 0) / 1000;
-      const end = idx < turns.length ? turns[idx] / 1000 : Math.max(dur(), start + 0.5);
+      const end = idx < turns.length ? turns[idx] / 1000 : Math.max(pb.dur(), start + 0.5);
       const words = $cap.children;
       const n = Math.ceil(Math.max(0, Math.min(1, (tSec - start) / Math.max(0.5, end - start))) * words.length);
       for (let i = 0; i < words.length; i++) words[i].classList.toggle('on', i < n);
     }
-    paintCaption(0);
+    // The shared transport bar drives everything: gentle skips each frame,
+    // page + caption repaints, and the calm close when the reading ends.
     // userSeek: only a deliberate scrub may sweep the calm end-screen away —
     // the frame loop must never repaint over it.
-    function paintNow(userSeek) {
-      const d = dur();
-      $fill.style.width = d ? (audio.currentTime / d * 100) + '%' : '0%';
-      $time.textContent = fmt(audio.currentTime) + (d ? ' / ' + fmt(d) : '');
-      const idx = currentPageIndex(reading, audio.currentTime);
-      if (idx !== lastIdx || (userSeek && stage.querySelector('.calm'))) { lastIdx = idx; renderStage(idx); }
-      paintCaption(audio.currentTime);
-    }
-    function tick() {
-      if (!player.audio) return;
-      applySkips(reading, audio);
-      paintNow(false);
-      player.raf = requestAnimationFrame(tick);
-    }
-    $pp.onclick = () => {
-      if (audio.paused) { audio.play(); $pp.textContent = '❘❘'; tick(); }
-      else { audio.pause(); $pp.textContent = '▶'; }
-    };
-    makeScrubber($track, audio, dur, () => paintNow(true));
-    audio.onended = async () => {
-      $pp.textContent = '▶';
-      DB.metrics.bump('play.completed');
-      // the calm close — no autoplay, no feed
-      const next = reading.episodeIndex != null
-        ? (await DB.readings.forBook(reading.bookId)).find(r => r.readerId === reading.readerId && r.episodeIndex === reading.episodeIndex + 1)
-        : null;
-      stage.innerHTML = '';
-      const calm = el(
-        '<div class="calm"><div class="moon">🌙</div><h2>The end.</h2>' +
-        '<p>' + (next ? 'The next chapter is waiting whenever you are.' : 'Sweet dreams.') + '</p>' +
-        '<div class="btn-row" style="justify-content:center">' +
-        '<button class="btn" id="again">Read it again</button>' +
-        (next ? '<button class="btn primary" id="next">Chapter ' + next.episodeIndex + ' ›</button>' : '') +
-        '<button class="btn ghost" id="shelf2">Back to the shelf</button>' +
-        '</div></div>');
-      stage.appendChild(calm);
-      calm.querySelector('#again').onclick = () => { renderStage(0); lastIdx = 0; capIdx = -1; audio.currentTime = 0; audio.play(); $pp.textContent = '❘❘'; tick(); };
-      if (next) calm.querySelector('#next').onclick = () => { DB.metrics.bump('play.next_chapter'); go('player', { readingId: next.id }); };
-      calm.querySelector('#shelf2').onclick = () => go('shelf');
-    };
+    const pb = playerBar(audio, {
+      durFallback: () => reading.duration || 0,
+      onFrame: () => applySkips(reading, audio),
+      onPaint: userSeek => {
+        const idx = currentPageIndex(reading, audio.currentTime);
+        if (idx !== lastIdx || (userSeek && stage.querySelector('.calm'))) { lastIdx = idx; renderStage(idx); }
+        paintCaption(audio.currentTime);
+      },
+      onEnded: async () => {
+        DB.metrics.bump('play.completed');
+        // the calm close — no autoplay, no feed
+        const next = reading.episodeIndex != null
+          ? (await DB.readings.forBook(reading.bookId)).find(r => r.readerId === reading.readerId && r.episodeIndex === reading.episodeIndex + 1)
+          : null;
+        stage.innerHTML = '';
+        const calm = el(
+          '<div class="calm"><div class="moon">🌙</div><h2>The end.</h2>' +
+          '<p>' + (next ? 'The next chapter is waiting whenever you are.' : 'Sweet dreams.') + '</p>' +
+          '<div class="btn-row" style="justify-content:center">' +
+          '<button class="btn" id="again">Read it again</button>' +
+          (next ? '<button class="btn primary" id="next">Chapter ' + next.episodeIndex + ' ›</button>' : '') +
+          '<button class="btn ghost" id="shelf2">Back to the shelf</button>' +
+          '</div></div>');
+        stage.appendChild(calm);
+        calm.querySelector('#again').onclick = () => { renderStage(0); lastIdx = 0; capIdx = -1; audio.currentTime = 0; pb.start(); };
+        if (next) calm.querySelector('#next').onclick = () => { DB.metrics.bump('play.next_chapter'); go('player', { readingId: next.id }); };
+        calm.querySelector('#shelf2').onclick = () => go('shelf');
+      },
+    });
+    wrap.appendChild(pb.el);
+    player.reading = reading;
+    paintCaption(0);
   });
 
   // =========================================================
@@ -437,8 +416,6 @@
       }, 'image/png');
     };
 
-    const back = el('<button class="back">' + (S.mode === 'kid' ? '‹ back to the shelf' : '‹ back') + '</button>');
-    back.onclick = leave;
-    root.appendChild(back);
+    root.appendChild(backLink('' + (S.mode === 'kid' ? '‹ back to the shelf' : '‹ back') + '', leave));
   });
 })();

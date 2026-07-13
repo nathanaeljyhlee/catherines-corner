@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const { el, esc, fmt, toast, avatar, blobURL, dropURL, clearURLCache, AV_COLORS } = UI;
+  const { el, esc, fmt, toast, avatar, blobURL, dropURL, clearURLCache, AV_COLORS, backLink, downloadBlob, safeName } = UI;
   const { S, go, register, render } = App;
 
   // =========================================================
@@ -118,9 +118,7 @@
     card.querySelector('#save').onclick = async () => {
       const v = card.querySelector('#nm').value.trim();
       if (!v) return toast('A name makes it theirs.');
-      const corner = { id: DB.uid(), name: v, createdAt: Date.now() };
-      await DB.corners.save(corner);
-      await DB.corners.setActive(corner.id);
+      await DB.corners.create(v);
       go('home');
     };
   });
@@ -242,16 +240,12 @@
     card.querySelector('#add').onclick = async () => {
       const v = card.querySelector('#nm').value.trim();
       if (!v) return toast('A name makes it theirs.');
-      const corner = { id: DB.uid(), name: v, createdAt: Date.now() };
-      await DB.corners.save(corner);
-      await DB.corners.setActive(corner.id);
+      await DB.corners.create(v);
       DB.metrics.bump('corners.added');
       toast(v + '’s corner is ready — their shelf is showing now.');
       go('home');
     };
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 
   // =========================================================
@@ -305,9 +299,7 @@
     else { root.appendChild(androidCard); root.appendChild(iosCard); }
 
     const backTo = S.params.returnTo === 'requests' ? 'requests' : 'home';
-    const back = el('<button class="back">' + (backTo === 'requests' ? '‹ book requests' : '‹ grown-up home') + '</button>');
-    back.onclick = () => go(backTo);
-    root.appendChild(back);
+    root.appendChild(backLink('' + (backTo === 'requests' ? '‹ book requests' : '‹ grown-up home') + '', () => go(backTo)));
   });
 
   // =========================================================
@@ -350,12 +342,7 @@
       const btn = card.querySelector('#backup');
       btn.disabled = true; btn.textContent = 'Packing the corner…';
       try {
-        const blob = await Backup.exportAll();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'catherines-corner-backup-' + new Date().toISOString().slice(0, 10) + '.zip';
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+        downloadBlob(await Backup.exportAll(), 'catherines-corner-backup-' + new Date().toISOString().slice(0, 10) + '.zip');
         await DB.settings.set('lastBackupAt', Date.now());
         await DB.settings.set('readingsSinceBackup', 0);
         DB.metrics.bump('safety.backup_done');
@@ -414,9 +401,7 @@
     root.appendChild(el(
       '<p class="hint" style="margin-top:14px">New phone, or lending it to family? <a href="check.html">Run the 30-second device check</a> to make sure recording and storage behave there.</p>'));
 
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 
   // =========================================================
@@ -470,9 +455,7 @@
       });
       render();
     };
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 
   // =========================================================
@@ -520,9 +503,7 @@
     const row = el('<div class="btn-row"><button class="btn primary" id="add">📷 Add a book</button></div>');
     root.appendChild(row);
     row.querySelector('#add').onclick = () => go('addBook');
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 
   register('addBook', async function adultAddBook(root, ctx) {
@@ -568,9 +549,7 @@
       if (!b) return;
       go('studio', { bookId: b.id, returnTo: S.params.returnTo === 'recWhat' ? 'recWhat' : null });
     };
-    const back = el('<button class="back">‹ the library</button>');
-    back.onclick = () => go('books');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ the library', () => go('books')));
   });
 
   register('bookDetail', async function adultBookDetail(root) {
@@ -603,11 +582,8 @@
       row.querySelector('[data-dl]').onclick = async () => {
         const audioBlob = await DB.audio.get(r.id);
         if (!audioBlob) return toast('This reading’s sound couldn’t be found on this device.');
-        const a = document.createElement('a');
-        a.href = blobURL('aud-' + r.id, audioBlob);
-        const ext = Backup.audioExt(audioBlob.type);
-        a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + ext).replace(/[/\\?%*:|"<>]/g, '-');
-        a.click();
+        downloadBlob(blobURL('aud-' + r.id, audioBlob),
+          book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + Backup.audioExt(audioBlob.type));
       };
       row.querySelector('[data-vx]').onclick = async e => {
         const btn = e.currentTarget;
@@ -619,11 +595,7 @@
             reading: r, audioBlob, book, reader: rd,
             onProgress: p => { btn.textContent = '🎞 ' + Math.round(p * 100) + '%'; },
           });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(out.blob);
-          a.download = (book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + out.ext).replace(/[/\\?%*:|"<>]/g, '-');
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+          downloadBlob(out.blob, book.title + (r.episodeIndex != null ? ' - chapter ' + r.episodeIndex : '') + ' - ' + (rd ? rd.name : 'reading') + '.' + out.ext);
           toast('Video ready — pages and voice in one file to share.');
         } catch (err) {
           toast('Video export didn’t finish: ' + (err && err.message || err));
@@ -665,9 +637,7 @@
     };
     const parcelBtn = row.querySelector('#parcel');
     if (parcelBtn) parcelBtn.onclick = () => sendParcel({ bookId: book.id }, book.title, parcelBtn);
-    const back = el('<button class="back">‹ the library</button>');
-    back.onclick = () => go('books');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ the library', () => go('books')));
   });
 
   // =========================================================
@@ -759,9 +729,7 @@
       await DB.metrics.reset();
       render();
     };
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 
   // =========================================================
@@ -778,7 +746,7 @@
     if (btn) { btn.disabled = true; btn.textContent = '📦 packing…'; }
     try {
       const { blob, manifest } = await Backup.exportParcel(Object.assign({}, what, { toId }));
-      const fname = ('parcel - ' + title + (manifest.to ? ' - for ' + manifest.to : '') + '.zip').replace(/[/\\?%*:|"<>]/g, '-');
+      const fname = safeName('parcel - ' + title + (manifest.to ? ' - for ' + manifest.to : '') + '.zip');
       DB.metrics.bump('share.parcel_sent');
       await Send.shareFile(blob, fname,
         'A parcel from Catherine’s Corner 🌙 — “' + title + '”, voices and all. ' +
@@ -915,8 +883,6 @@
       toast('Request added — send it on its way with ✉️ or 💬.');
       render();
     };
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 })();

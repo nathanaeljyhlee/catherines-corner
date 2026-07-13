@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const { el, esc, fmt, toast, avatar, blobURL, makeScrubber, pageInk, capturePanel } = UI;
+  const { el, esc, fmt, toast, avatar, blobURL, pageInk, capturePanel, playerBar, backLink } = UI;
   const { S, go, register, player } = App;
 
   function startRecordFlow(prefill) {
@@ -73,9 +73,7 @@
     root.appendChild(addBtn);
     addBtn.querySelector('#addr').onclick = () => go('readers');
     if (!readers.length) root.appendChild(el('<p class="hint" style="margin-top:8px">Add the first reader — Dad, Grandma, a big sister…</p>'));
-    const back = el('<button class="back">‹ grown-up home</button>');
-    back.onclick = () => go('home');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ grown-up home', () => go('home')));
   });
 
   register('recWhat', async function recWhat(root, ctx) {
@@ -133,9 +131,7 @@
     root.appendChild(row);
     row.querySelector('#newb').onclick = () => go('addBook', { returnTo: 'recWhat' });
     row.querySelector('#told').onclick = () => { S.rec.told = true; S.rec.bookId = null; S.rec.pageTurns = []; S.rec.newPages = []; go('recShape'); };
-    const back = el('<button class="back">‹ who’s reading</button>');
-    back.onclick = () => go('recWho');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ who’s reading', () => go('recWho')));
   });
 
   async function nextEpisodeIndex(bookId, readerId) {
@@ -157,9 +153,7 @@
         S.rec.storyTitle = card.querySelector('#st').value.trim() || 'A bedtime story';
         go(S.rec.audioBlob ? 'recPass2' : 'recPass1');
       };
-      const back = el('<button class="back">‹ what are we reading</button>');
-      back.onclick = () => go('recWhat');
-      root.appendChild(back);
+      root.appendChild(backLink('‹ what are we reading', () => go('recWhat')));
       return;
     }
 
@@ -186,9 +180,7 @@
     };
     stack.appendChild(chap);
     root.appendChild(stack);
-    const back = el('<button class="back">‹ what are we reading</button>');
-    back.onclick = () => go('recWhat');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ what are we reading', () => go('recWhat')));
   });
 
   register('recPass1', async function recPass1(root) {
@@ -226,9 +218,7 @@
     root.appendChild(hero);
     hero.querySelector('#p1help').onclick = e => { e.preventDefault(); go('memoHelp'); };
 
-    const back = el('<button class="back">‹ back</button>');
-    back.onclick = () => go('recShape');
-    root.appendChild(back);
+    root.appendChild(backLink('‹ back', () => go('recShape')));
   });
 
   register('recPass2', async function recPass2(root, ctx) {
@@ -255,37 +245,16 @@
 
     const url = URL.createObjectURL(S.rec.audioBlob);
     const audio = new Audio(url);
-    player.audio = audio; // registered so navigating anywhere else stops playback
-    const bar = el(
-      '<div class="player"><div class="p-bar" style="border-top:none">' +
-      '<button class="p-play" id="pp">▶</button>' +
-      '<button class="p-nudge" id="b5" aria-label="back five seconds">↺5</button>' +
-      '<button class="p-nudge" id="f5" aria-label="forward five seconds">5↻</button>' +
-      '<div class="p-track" id="track"><i id="fill"></i></div>' +
-      '<span class="p-time" id="time">0:00</span></div></div>');
+    // The shared transport bar registers this audio as the app's active
+    // player, so navigating anywhere else stops playback.
+    const pb = playerBar(audio, {
+      bare: true, nudge: true,
+      durFallback: () => S.rec.duration || 0,
+      onPaint: () => paintStrip(),
+    });
+    const bar = el('<div class="player"></div>');
+    bar.appendChild(pb.el);
     root.appendChild(bar);
-    const $pp = bar.querySelector('#pp'), $fill = bar.querySelector('#fill'), $time = bar.querySelector('#time'), $track = bar.querySelector('#track');
-    let raf = null;
-    function dur() { return audio.duration && isFinite(audio.duration) ? audio.duration : (S.rec.duration || 0); }
-    function paintBar() {
-      const d = dur();
-      $fill.style.width = d ? (audio.currentTime / d * 100) + '%' : '0%';
-      $time.textContent = fmt(audio.currentTime) + ' / ' + fmt(d);
-      paintStrip();
-    }
-    function tick() {
-      if (player.audio !== audio) return;
-      paintBar();
-      raf = requestAnimationFrame(tick);
-    }
-    $pp.onclick = () => {
-      if (audio.paused) { audio.play(); $pp.textContent = '❘❘'; tick(); }
-      else { audio.pause(); $pp.textContent = '▶'; if (raf) cancelAnimationFrame(raf); }
-    };
-    makeScrubber($track, audio, dur, paintBar);
-    bar.querySelector('#b5').onclick = () => { audio.currentTime = Math.max(0, audio.currentTime - 5); paintBar(); };
-    bar.querySelector('#f5').onclick = () => { const d = dur(); audio.currentTime = d ? Math.min(d, audio.currentTime + 5) : audio.currentTime + 5; paintBar(); };
-    audio.onended = () => { $pp.textContent = '▶'; if (raf) cancelAnimationFrame(raf); };
 
     let strip = null, tapBtn = null;
     let wordsPage = -1, wordsSel = null, textsDirty = false;
@@ -365,7 +334,7 @@
       sgBtn.onclick = async () => {
         const all = pages.concat(newPages);
         if (all.length < 2) return toast('Add the page photos first — then turns can be suggested.');
-        const d = dur();
+        const d = pb.dur();
         if (!d) return toast('This recording’s length isn’t known yet — press play for a moment first.');
         sgBtn.disabled = true; sgBtn.textContent = '✨ reading the pages…';
         DB.metrics.bump('record.suggest_turns_used');
@@ -395,7 +364,7 @@
             const t = i === 0 ? 0 : turns[i - 1];
             if (t == null) return;
             audio.currentTime = t / 1000;
-            paintBar();
+            pb.paint();
           };
           pg.querySelector('.stamp').onclick = () => {
             if (turns[i - 1] == null) return;
@@ -450,7 +419,7 @@
     paintSkips();
 
     function leaveEdit() {
-      audio.pause(); if (raf) cancelAnimationFrame(raf);
+      audio.pause();
       URL.revokeObjectURL(url);
       const bookId = S.rec.bookId;
       S.rec = null;
@@ -483,7 +452,7 @@
     root.appendChild(saveRow);
     saveRow.querySelector('#save').onclick = async e => {
       const btn = e.currentTarget;
-      audio.pause(); if (raf) cancelAnimationFrame(raf);
+      audio.pause();
       btn.disabled = true;
       try {
         await saveBookIfChanged();
@@ -542,14 +511,12 @@
       audio.pause(); URL.revokeObjectURL(url); S.rec = null; go('home');
     };
 
-    const back = el('<button class="back">' + (editing ? '‹ back (nothing changes)' : '‹ read & record') + '</button>');
-    back.onclick = () => {
+    root.appendChild(backLink(editing ? '‹ back (nothing changes)' : '‹ read & record', () => {
       if (editing) return leaveEdit();
-      audio.pause(); if (raf) cancelAnimationFrame(raf);
+      audio.pause();
       URL.revokeObjectURL(url);
       go('recPass1');
-    };
-    root.appendChild(back);
+    }));
   });
 
   register('recDone', async function recDone(root, ctx) {

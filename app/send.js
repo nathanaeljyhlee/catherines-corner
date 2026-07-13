@@ -31,18 +31,9 @@
     if (!p || typeof p !== 'object') return null;
     return { v: 1, kid: strField(p.kid, 40), book: strField(p.book, 120), note: strField(p.note, 200) };
   }
-  function encodeInvite(payload) {
-    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  }
-  function decodeInvite(str) {
-    try {
-      const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
-      return sanitizeInvite(JSON.parse(decodeURIComponent(escape(atob(b64)))));
-    } catch (e) { return null; }
-  }
+  const decodeInvite = str => sanitizeInvite(UI.b64uDecode(str));
   function inviteLink(payload) {
-    return appURL() + '#invite=' + encodeInvite(sanitizeInvite(payload));
+    return appURL() + '#invite=' + UI.b64uEncode(sanitizeInvite(payload));
   }
   function inviteFromHash() {
     const m = (location.hash || '').match(/#invite=([A-Za-z0-9\-_]+)/);
@@ -109,11 +100,7 @@
       try { await navigator.share({ files: [file], text }); return; }
       catch (e) { if (e && e.name === 'AbortError') return; /* sheet failed — fall back */ }
     }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = fname;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    UI.downloadBlob(blob, fname);
     toast('Saved “' + fname + '” — send the file over any way you like.');
   }
 
@@ -162,7 +149,7 @@
     function showSend(blob, duration) {
       stageWrap.innerHTML = '';
       const ext = Backup.audioExt(blob.type);
-      const fname = ('for ' + kid + ' - ' + (book || 'a story') + '.' + ext).replace(/[/\\?%*:|"<>]/g, '-');
+      const fname = UI.safeName('for ' + kid + ' - ' + (book || 'a story') + '.' + ext);
       const url = URL.createObjectURL(blob);
       const card = el(
         '<div class="card"><div class="kicker">your reading — ' + fmt(duration || 0) + '</div>' +
