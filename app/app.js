@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.10.1';
+  const APP_VERSION = '1.10.2';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -127,10 +127,14 @@
     $app.appendChild(body);
     await fn(body, ctx);
 
-    $app.appendChild(el('<footer class="appfoot">' +
-      (isGuest ? 'Recorded right here, sent back by you — nothing is uploaded anywhere.'
-        : 'Everything stays on this device — back it up under “Keep it safe.”') +
-      ' · v' + APP_VERSION + '</footer>'));
+    const foot = el('<footer class="appfoot">' +
+      (isGuest ? 'Recorded right here, sent back by you — nothing is uploaded anywhere. · v' + APP_VERSION
+        : 'Everything stays on this device — back it up under “Keep it safe.” · ' +
+          '<button class="foot-ver" id="vlink" title="what’s new in this version">v' + APP_VERSION + ' ✨</button>') +
+      '</footer>');
+    $app.appendChild(foot);
+    const vlink = foot.querySelector('#vlink');
+    if (vlink) vlink.onclick = () => go('whatsnew');
   }
 
   // =========================================================
