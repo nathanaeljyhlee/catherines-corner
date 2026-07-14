@@ -230,7 +230,12 @@
   // ---------- audio capture panel ----------
   // The one way a voice enters the app: live recording (with pause) or an
   // imported file, iOS quirks handled. Used by pass 1 and the invite page.
-  // opts: { statusIdle, note (html), onAudio(blob, durationSec, imported) }
+  // opts: { statusIdle, note (html), transcribe, onAudio(blob, durationSec, imported, extra) }
+  // With transcribe: the browser's built-in speech recognition (where it
+  // exists) jots the words down AS THEY ARE READ, each phrase stamped with
+  // its moment in the recording — extra.transcript = [{at, text}]. Strictly
+  // best-effort: it may never interfere with the recording itself, so every
+  // failure path is swallowed and the feature simply isn't offered.
   function capturePanel(opts) {
     // Degrade honestly where live recording isn't possible (no MediaRecorder,
     // no mic API, or a non-HTTPS address): keep the import path front and
@@ -259,9 +264,46 @@
     const $tm = hero.querySelector('#tm'), $dot = hero.querySelector('#dot'), $stat = hero.querySelector('#stat');
     const $rec = hero.querySelector('#rec'), $pause = hero.querySelector('#pause'), $stop = hero.querySelector('#stop');
 
-    function tickTime() {
-      const t = elapsedBefore + (mediaRecorder && mediaRecorder.state === 'recording' ? (Date.now() - t0) / 1000 : 0);
-      $tm.textContent = fmt(t);
+    function elapsedNow() {
+      return elapsedBefore + (mediaRecorder && mediaRecorder.state === 'recording' ? (Date.now() - t0) / 1000 : 0);
+    }
+    function tickTime() { $tm.textContent = fmt(elapsedNow()); }
+
+    // live word-jotting (see header note) — its own listener, its own failures
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const canTranscribe = !!(opts.transcribe && SR);
+    let transcript = [], sr = null, srWanted = false;
+    function srStart() {
+      if (!canTranscribe || sr) return;
+      try {
+        sr = new SR();
+        sr.continuous = true;
+        sr.interimResults = false;
+        sr.lang = navigator.language || 'en-US';
+        sr.onresult = e => {
+          try {
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+              if (e.results[i].isFinal) {
+                const text = String(e.results[i][0].transcript || '').trim();
+                if (text) transcript.push({ at: elapsedNow(), text });
+              }
+            }
+          } catch (err) { /* jotting only */ }
+        };
+        sr.onend = () => { sr = null; if (srWanted) srStart(); };   // Chrome ends on silence — pick back up
+        sr.onerror = () => {
+          // No speech service here (offline, denied, headless): give up for
+          // this recording — quietly, and without touching the recording.
+          srWanted = false;
+          if ($stat && $dot.classList.contains('live')) $stat.textContent = 'recording — just read';
+        };
+        sr.start();
+        if ($stat) $stat.textContent = 'recording — just read (✍️ jotting the words down too)';
+      } catch (err) { sr = null; }
+    }
+    function srStop() {
+      srWanted = false;
+      if (sr) { try { sr.stop(); } catch (e) {} sr = null; }
     }
 
     if ($rec) $rec.onclick = async () => {
@@ -273,13 +315,16 @@
         mediaRecorder.onstop = () => {
           stream.getTracks().forEach(t => t.stop());
           clearInterval(timer);
+          srStop();
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-          opts.onAudio(blob, elapsedBefore + (t0 ? (Date.now() - t0) / 1000 : 0), false);
+          opts.onAudio(blob, elapsedBefore + (t0 ? (Date.now() - t0) / 1000 : 0), false,
+            transcript.length ? { transcript: transcript.slice() } : null);
         };
         mediaRecorder.start();
         t0 = Date.now(); elapsedBefore = 0;
         timer = setInterval(tickTime, 250);
         $dot.classList.add('live'); $stat.textContent = 'recording — just read';
+        srWanted = true; srStart();
         $rec.style.display = 'none'; $pause.style.display = ''; $stop.style.display = '';
       } catch (err) {
         if (window.DB) DB.metrics.bump('error.mic_denied');
@@ -293,10 +338,12 @@
       if (mediaRecorder.state === 'recording') {
         mediaRecorder.pause();
         elapsedBefore += (Date.now() - t0) / 1000; t0 = 0;
+        srStop();
         $dot.classList.remove('live'); $stat.textContent = 'paused — little interruptions welcome';
         $pause.textContent = '▶ Keep reading';
       } else if (mediaRecorder.state === 'paused') {
         mediaRecorder.resume(); t0 = Date.now();
+        srWanted = true; srStart();
         $dot.classList.add('live'); $stat.textContent = 'recording — just read';
         $pause.textContent = '❘❘ Pause';
       }

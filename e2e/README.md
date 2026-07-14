@@ -39,7 +39,10 @@ owner journey plus the seams that history shows break quietly:
   parcel warns plainly before anything is tucked in
 
 - **live-promise coverage**: every user-facing claim is exercised — read-along
-  words (typed in pass 2, lit up in the player, surviving backup round-trips),
+  words (auto-jotted during pass 1 via a stubbed speech recognizer, dropped
+  onto pages with "use the words I read", typed words still ruling, the
+  transcript persisted on the reading; lit up in the player, surviving backup
+  round-trips),
   ✨ suggested turns, "add a cover photo later", keep-a-copy downloads, serial
   chapters (badge → episode list → next-chapter offer), the quiet multi-voice
   picker, the kid cover studio, and the voice-memo share target (POST → toast
