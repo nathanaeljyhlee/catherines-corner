@@ -14,6 +14,16 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.12', slides: [
+        {
+          art: '🎙 <span class="arrows">→</span> <span class="capart">✍️ …little <span class="hl">bear</span></span>',
+          sub: 'where the browser can — always yours to fix',
+          title: 'The words write themselves down',
+          text: 'While you read, the app now jots the words down too (on phones whose browser can listen along). On the pages step, “✍️ Use the words I read” drops them onto the right pages — check them over, fix a word, done. Typing stays for imports and quiet browsers.',
+        },
+      ],
+    },
+    {
       v: '1.11', slides: [
         {
           art: '<span class="capart">Goodnight <span class="hl">moon</span></span>',

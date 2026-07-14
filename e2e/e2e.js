@@ -133,6 +133,18 @@ async function enterPin(page, digits) {
 
   // ============ PART A: full owner journey on a fresh device ============
   const ctxA = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['microphone'], acceptDownloads: true });
+  // A fake speech recognizer: emits two timed phrases per recording, so the
+  // words-write-themselves-down promise is testable without a speech service.
+  await ctxA.addInitScript(() => {
+    window.SpeechRecognition = window.webkitSpeechRecognition = class {
+      start() {
+        this._t1 = setTimeout(() => this.onresult && this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'goodnight moon so bright' }], { isFinal: true })] }), 400);
+        this._t2 = setTimeout(() => this.onresult && this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'sleep now little bear' }], { isFinal: true })] }), 1000);
+      }
+      stop() { clearTimeout(this._t1); clearTimeout(this._t2); this.onend && this.onend(); }
+      abort() { this.stop(); }
+    };
+  });
   const page = await ctxA.newPage();
   page.on('pageerror', e => errors.push('A: ' + e.message));
   let promptAnswer = '';   // what window.prompt returns on page A this moment
@@ -181,7 +193,12 @@ async function enterPin(page, digits) {
   assert(await page.$$('.pagestrip .pg').then(x => x.length === 2), 'two page thumbs in the strip');
   await page.click('#suggest');                             // promise: turns placed by each page's print
   await page.waitForSelector('.pg .stamp:visible');
-  // promise: "the words on the screen to read along" — typed once, per page
+  // promise: the words write themselves down — jotted in pass 1, dropped onto pages
+  await page.waitForSelector('#autowords');
+  await page.click('#autowords');
+  await page.waitForSelector('.toast.show:has-text("Words placed")');
+  assert((await page.$eval('#wtext', n => n.value)).length > 0, 'auto-jotted words landed in the page editor');
+  // …and typing still rules: hand-typed words overwrite for the caption checks below
   await page.waitForSelector('#wordswrap');
   await page.fill('#wtext', 'Goodnight moon goodnight stars all around the room');
   await page.click('.pg[data-i="1"] img');                  // switch to page 2's words
@@ -189,6 +206,12 @@ async function enterPin(page, digits) {
   await page.fill('#wtext', 'Sleep now little bear sleep now');
   await page.click('#save');
   await page.waitForSelector('.rec-hero:has-text("reading is ready")');
+
+  const savedTranscript = await page.evaluate(async () => {
+    const r = (await DB.readings.all()).find(x => x.bookId);
+    return (r.transcript || []).length;
+  });
+  assert(savedTranscript >= 2, 'the jotted transcript is saved on the reading (got ' + savedTranscript + ' segments)');
 
   step('kid mode: shelf tile → player has spread stage + rotate hint (portrait)');
   await page.click('#kid');

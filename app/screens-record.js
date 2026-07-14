@@ -14,7 +14,7 @@
       told: false, storyTitle: '',
       episode: false, episodeIndex: null, episodeTitle: '',
       audioBlob: null, duration: 0, imported: false,
-      pageTurns: [], skipRanges: [], pageFormat: null,
+      pageTurns: [], skipRanges: [], pageFormat: null, transcript: null,
     }, prefill || {});
     DB.metrics.bump('record.flow_started');
     go('recWho');
@@ -32,7 +32,7 @@
       episode: reading.episodeIndex != null, episodeIndex: reading.episodeIndex, episodeTitle: reading.title || '',
       audioBlob, duration: reading.duration || 0, imported: !!reading.imported,
       pageTurns: (reading.pageTurns || []).slice(), skipRanges: (reading.skipRanges || []).slice(),
-      pageFormat: null,
+      pageFormat: null, transcript: (reading.transcript || []).slice(),
     };
     go('recPass2');
   }
@@ -205,13 +205,15 @@
 
     const hero = capturePanel({
       statusIdle: 'ready when you are' + (reader ? ', ' + esc(reader.name) : ''),
+      transcribe: true,   // jot the words down as they're read (best-effort)
       note: '…or bring a recording you already have — a voice memo works beautifully. ' +
         '<a href="#" id="p1help">Step-by-step: getting a voice memo in</a>',
-      onAudio: (blob, duration, imported) => {
+      onAudio: (blob, duration, imported, extra) => {
         DB.metrics.bump(imported ? 'record.audio_imported' : 'record.audio_recorded');
         S.rec.audioBlob = blob;
         S.rec.duration = duration;
         S.rec.imported = imported;
+        S.rec.transcript = (extra && extra.transcript) || null;
         go('recPass2');
       },
     });
@@ -274,6 +276,7 @@
         '<div class="btn-row">' +
         '<button class="btn warm big" id="tap" ' + (pages.length + newPages.length ? '' : 'disabled') + '>👆 Tap — page turn</button>' +
         '<button class="btn" id="suggest" ' + (pages.length + newPages.length > 1 ? '' : 'disabled') + '>✨ Suggest the turns</button>' +
+        ((S.rec.transcript || []).length ? '<button class="btn" id="autowords" title="the words jotted down while you read, dropped onto the right pages">✍️ Use the words I read</button>' : '') +
         '<button class="btn" id="undo">undo last turn</button>' +
         '<span class="btn filebtn">📷 Add page photos<input type="file" id="pgs" accept="image/*" multiple></span>' +
         '</div>' +
@@ -329,6 +332,34 @@
         paintStrip();
       };
       sec.querySelector('#undo').onclick = () => { turns.pop(); sync(); paintStrip(); };
+      // The words jotted down during pass 1, distributed to pages by the
+      // turn times — filling only pages whose words are still empty, so a
+      // hand-typed page is never overwritten.
+      const awBtn = sec.querySelector('#autowords');
+      if (awBtn) awBtn.onclick = () => {
+        const all = pages.concat(newPages);
+        if (!all.length) return toast('Add the page photos first.');
+        if (all.length > 1 && turns.length < all.length - 1) {
+          return toast('Set the turns first (👆 tap or ✨ suggest) — then the words drop onto the right pages.');
+        }
+        wordsCommit();
+        let filled = 0;
+        all.forEach((p, i) => {
+          if (p.text) return;   // never overwrite what a person typed
+          const from = i === 0 ? 0 : turns[i - 1];
+          const to = i < turns.length ? turns[i] : Infinity;
+          const text = (S.rec.transcript || [])
+            .filter(seg => seg.at * 1000 >= from && seg.at * 1000 < to)
+            .map(seg => seg.text).join(' ').trim();
+          if (text) { p.text = text; textsDirty = true; filled++; }
+        });
+        wordsPage = -1;   // reload the editor from the freshly filled page
+        paintStrip();
+        DB.metrics.bump('record.auto_words_used');
+        toast(filled
+          ? 'Words placed on ' + filled + ' page' + (filled === 1 ? '' : 's') + ' — read them over and fix anything the ears got wrong.'
+          : 'Every page already has its words — nothing was changed.');
+      };
       // Suggested turns: split the recording across the pages in proportion to
       // how much text each page photo carries — a starting point to fix by ear.
       sgBtn.onclick = async () => {
@@ -480,6 +511,7 @@
           imported: !!S.rec.imported,
           pageTurns: turns,
           skipRanges: skips,
+          transcript: (S.rec.transcript || []).length ? S.rec.transcript : null,
           isNew: true,
           createdAt: Date.now(),
         };
