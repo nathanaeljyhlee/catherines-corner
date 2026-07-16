@@ -92,16 +92,51 @@
     prompt('Copy this message:', text);
   }
 
-  // Share any file through the sheet, falling back to a plain download —
-  // used for parcels (and anything else that must reach another person).
-  async function shareFile(blob, fname, text) {
-    const file = new File([blob], fname, { type: blob.type || 'application/zip' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], text }); return; }
-      catch (e) { if (e && e.name === 'AbortError') return; /* sheet failed — fall back */ }
-    }
-    UI.downloadBlob(blob, fname);
-    toast('Saved “' + fname + '” — send the file over any way you like.');
+  // Get a FILE to another person. Deliberately TWO taps: packing a file can
+  // take a while, and browsers only allow navigator.share() inside a fresh
+  // tap — call it after seconds of packing and iOS/Android refuse the share
+  // sheet outright (and a silent blob download is no rescue on an installed
+  // iPhone app). So packing finishes first, then this sheet offers real
+  // buttons; each press is its own gesture, so the share sheet always opens.
+  // The file is shared alone (some apps drop attachments when text rides
+  // along); the note is shown here to copy as a follow-up message instead.
+  function shareFile(blob, fname, text) {
+    return new Promise(resolve => {
+      const file = new File([blob], fname, { type: blob.type || 'application/zip' });
+      const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+      const size = blob.size >= 1048576 ? (blob.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(blob.size / 1024)) + ' KB';
+      const sheet = el(
+        '<div class="handoff"><div class="card">' +
+        '<div class="kicker">packed and ready</div>' +
+        '<p style="margin:8px 0 0; word-break:break-word"><b>' + esc(fname) + '</b> <span class="hint">· ' + size + '</span></p>' +
+        '<div class="btn-row" style="margin-top:12px">' +
+        (canShare ? '<button class="btn primary" data-hshare>📤 Send it</button>' : '') +
+        '<button class="btn' + (canShare ? '' : ' primary') + '" data-hsave>⤓ Save the file</button>' +
+        '<button class="btn ghost" data-hdone>done</button></div>' +
+        (canShare ? '' : '<p class="hint" style="margin-top:10px">This browser can’t hand files straight to other apps — save it, then send it over any way you like.</p>') +
+        (text ? '<p class="hint" style="margin-top:10px">Words to send along: “' + esc(text) + '” <button class="btn ghost" data-hcopy style="padding:4px 10px; font-size:12px">⧉ copy</button></p>' : '') +
+        '</div></div>');
+      const close = () => { sheet.remove(); resolve(); };
+      const shareBtn = sheet.querySelector('[data-hshare]');
+      if (shareBtn) shareBtn.onclick = async () => {
+        try { await navigator.share({ files: [file] }); close(); }
+        catch (e) {
+          if (e && e.name === 'AbortError') return;   // they closed the OS sheet — the offer stays
+          toast('The share sheet didn’t take it — “Save the file” works everywhere.');
+        }
+      };
+      sheet.querySelector('[data-hsave]').onclick = () => {
+        UI.downloadBlob(blob, fname);
+        toast('Saved “' + fname + '” — send the file over any way you like.');
+      };
+      const copyBtn = sheet.querySelector('[data-hcopy]');
+      if (copyBtn) copyBtn.onclick = async () => {
+        try { await navigator.clipboard.writeText(text); toast('Copied — paste it into any message.'); }
+        catch (e) { prompt('Copy this message:', text); }
+      };
+      sheet.querySelector('[data-hdone]').onclick = close;
+      document.body.appendChild(sheet);
+    });
   }
 
   // =========================================================

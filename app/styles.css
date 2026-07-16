@@ -273,6 +273,11 @@ p.screen-sub{color:var(--soft); font-size:14.5px; margin-bottom:18px; max-width:
 .brushsize i{border-radius:50%; background:var(--ink); display:block}
 .bgdot{width:28px; height:28px; border-radius:8px; border:1.5px solid var(--line); cursor:pointer; padding:0}
 
+/* the "packed and ready" hand-off sheet — sits above everything but the toast */
+.handoff{position:fixed; inset:0; z-index:55; background:rgba(43,36,26,.42); display:flex; align-items:flex-end; justify-content:center;
+  padding:18px; padding-bottom:calc(18px + env(safe-area-inset-bottom, 0px))}
+.handoff .card{width:100%; max-width:430px}
+
 .toast{position:fixed; left:50%; bottom:calc(26px + env(safe-area-inset-bottom, 0px)); transform:translateX(-50%); background:var(--ink); color:#fff;
   padding:10px 18px; border-radius:999px; font-size:13.5px; box-shadow:0 14px 30px -12px var(--shadow); z-index:60;
   opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; text-align:center}

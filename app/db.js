@@ -223,6 +223,15 @@ const DBAPI = {
     }
     return id;
   },
+  // Reads a Corner ID out of however a human typed it — lowercase, spaces,
+  // missing dashes, with or without the CC. Returns the canonical
+  // CC-XXXX-XXXX, or null when the text doesn't hold one. Addressing a
+  // parcel must survive a code read out over the phone.
+  familyIdFrom(text) {
+    const raw = String(text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const m = raw.match(/^(?:CC)?([A-Z0-9]{4})([A-Z0-9]{4})$/);
+    return m ? 'CC-' + m[1] + '-' + m[2] : null;
+  },
   // Usage counters, so pain points show up as numbers instead of guesses.
   // Counts only — event names like 'record.audio_imported', never recordings,
   // names, or titles. Everything stays on this device; a grown-up can share a

@@ -738,14 +738,18 @@
   // it goes over any channel they already use, and their app accepts it.
   // =========================================================
   async function sendParcel(what, title, btn) {
+    // sending a few books to the same family shouldn't mean re-typing the
+    // code each time — the last used Corner ID comes back as the default
+    const last = (await DB.settings.get('lastParcelTo')) || '';
     const toId = prompt(
       'Their Corner ID? (optional — they can find it under Keep it safe.\n' +
-      'Addressed parcels land on the right shelf without a second thought; leave blank to send it open.)', '');
+      'Addressed parcels land on the right shelf without a second thought; leave blank to send it open.)', last);
     if (toId === null) return;   // changed their mind
     const label = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '📦 packing…'; }
     try {
       const { blob, manifest } = await Backup.exportParcel(Object.assign({}, what, { toId }));
+      if (manifest.to) await DB.settings.set('lastParcelTo', manifest.to);
       const fname = safeName('parcel - ' + title + (manifest.to ? ' - for ' + manifest.to : '') + '.zip');
       DB.metrics.bump('share.parcel_sent');
       await Send.shareFile(blob, fname,
@@ -763,7 +767,8 @@
     const { m, map } = parcel;
     const myId = await DB.familyId();
     const addressed = m.to || null;
-    const mine = addressed && addressed === myId;
+    // older parcels may carry a hand-typed address — read it generously
+    const mine = addressed && (DB.familyIdFrom(addressed) || addressed) === myId;
     const what = m.book ? m.book.title : ((m.readings && m.readings[0] && m.readings[0].title) || 'A bedtime story');
     const readerNames = (m.readers || []).map(r => r.name).filter(Boolean);
 

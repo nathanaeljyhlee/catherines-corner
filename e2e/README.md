@@ -34,9 +34,13 @@ owner journey plus the seams that history shows break quietly:
   release, reloads itself while idle, and IndexedDB survives untouched;
   auto-update holds back while an unsaved draft exists
 - **parcels**: a full two-family exchange — family A packs a book addressed
-  to family B's Corner ID, B accepts (reader merged once, readings marked
-  new, spread playback works), re-accepting adds nothing, and a mis-addressed
-  parcel warns plainly before anything is tucked in
+  to family B's Corner ID (typed sloppily: lowercase, spaces, no dashes — the
+  canonical id still lands), the packed-and-ready hand-off sheet offers its
+  own Send/Save taps (so the share sheet is never refused for a stale
+  gesture), the next parcel remembers the last-used id, B accepts (reader
+  merged once, readings marked new, spread playback works), re-accepting adds
+  nothing, and a mis-addressed parcel warns plainly before anything is tucked
+  in
 
 - **live-promise coverage**: every user-facing claim is exercised — read-along
   words (auto-jotted during pass 1 via a stubbed speech recognizer, dropped

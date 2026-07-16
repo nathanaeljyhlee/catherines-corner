@@ -34,7 +34,12 @@
   }
 
   // ---------- zip writer (STORE only) ----------
-  function makeZip(entries) {
+  // Entries carry {bytes} or {blob}: a blob is read once for its checksum,
+  // then the BLOB ITSELF goes into the output (the browser assembles blob
+  // parts by reference) — so packing a big book never holds two copies of
+  // every photo and recording in memory. That headroom is what lets a whole
+  // parcel pack on a phone.
+  async function makeZip(entries) {
     const enc = new TextEncoder();
     const parts = [], central = [];
     let offset = 0;
@@ -43,7 +48,8 @@
     const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xFFFF;
     for (const e of entries) {
       const name = enc.encode(e.name);
-      const crc = crc32(e.bytes), size = e.bytes.length;
+      const bytes = e.bytes || new Uint8Array(await e.blob.arrayBuffer());
+      const crc = crc32(bytes), size = bytes.length;
       const lh = new DataView(new ArrayBuffer(30));
       lh.setUint32(0, 0x04034b50, true);
       lh.setUint16(4, 20, true);       // version needed
@@ -56,7 +62,7 @@
       lh.setUint32(22, size, true);
       lh.setUint16(26, name.length, true);
       lh.setUint16(28, 0, true);
-      parts.push(new Uint8Array(lh.buffer), name, e.bytes);
+      parts.push(new Uint8Array(lh.buffer), name, e.blob || bytes);
 
       const ch = new DataView(new ArrayBuffer(46));
       ch.setUint32(0, 0x02014b50, true);
@@ -147,12 +153,12 @@
     const bo = { id: b.id, title: b.title, cornerId: b.cornerId ?? null, pageFormat: b.pageFormat || 'single', createdAt: b.createdAt, cover: null, pages: [] };
     if (b.cover) {
       const f = 'images/cover-' + b.id + '.' + extOf(b.cover.type);
-      files.push({ name: f, bytes: new Uint8Array(await b.cover.arrayBuffer()) });
+      files.push({ name: f, blob: b.cover });
       bo.cover = { file: f, mime: b.cover.type };
     }
     for (const p of b.pages || []) {
       const f = 'images/page-' + p.id + '.' + extOf(p.blob.type);
-      files.push({ name: f, bytes: new Uint8Array(await p.blob.arrayBuffer()) });
+      files.push({ name: f, blob: p.blob });
       bo.pages.push({ id: p.id, type: p.type, file: f, mime: p.blob.type, text: p.text || null });
     }
     return bo;
@@ -163,7 +169,7 @@
     let audio = null;
     if (blob) {
       const f = 'audio/' + r.id + '.' + audioExt(blob.type);
-      files.push({ name: f, bytes: new Uint8Array(await blob.arrayBuffer()) });
+      files.push({ name: f, blob });
       audio = { file: f, mime: blob.type };
     }
     return { ...meta, audio };
@@ -186,7 +192,7 @@
       corners, readers, books: booksOut, readings: readingsOut, requests,
     };
     files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
-    return makeZip(files);
+    return await makeZip(files);
   }
 
   // A v1 backup has no corners: its rows are filed under a corner matched (or
@@ -325,7 +331,7 @@
       corners, readers, books: booksOut, readings: readingsOut, requests: [],
     };
     files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
-    return { blob: makeZip(files), counts: { readings: sendReadings.length, books: sendBooks.length } };
+    return { blob: await makeZip(files), counts: { readings: sendReadings.length, books: sendBooks.length } };
   }
 
   // ---------- parcels: one book (or told story) from one family to another ----------
@@ -352,11 +358,13 @@
       format: 'catherines-corner-parcel', formatVersion: 1,
       exportedAt: new Date().toISOString(),
       from: { id: await DB.familyId(), corner: corner ? corner.name : null },
-      to: (toId || '').trim().toUpperCase() || null,
+      // however they typed the code, the parcel carries the canonical id —
+      // an unrecognizable scribble is kept as typed so the receiver sees it
+      to: DB.familyIdFrom(toId) || (toId || '').trim().toUpperCase() || null,
       readers, book: bookOut, readings: readingsOut,
     };
     files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
-    return { blob: makeZip(files), manifest };
+    return { blob: await makeZip(files), manifest };
   }
 
   // Accept a parcel into the ACTIVE corner. Semantics that keep it safe:

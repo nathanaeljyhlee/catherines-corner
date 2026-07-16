@@ -147,8 +147,15 @@ async function enterPin(page, digits) {
   });
   const page = await ctxA.newPage();
   page.on('pageerror', e => errors.push('A: ' + e.message));
-  let promptAnswer = '';   // what window.prompt returns on page A this moment
-  page.on('dialog', d => d.accept(d.type() === 'prompt' ? promptAnswer : undefined));
+  let promptAnswer = '';        // what window.prompt returns on page A this moment (null = dismiss)
+  let lastPromptDefault = null; // the prefill the last prompt offered — lets tests see remembered values
+  page.on('dialog', d => {
+    if (d.type() === 'prompt') {
+      lastPromptDefault = d.defaultValue();
+      if (promptAnswer === null) return d.dismiss();
+    }
+    d.accept(d.type() === 'prompt' ? promptAnswer : undefined);
+  });
 
   step('boot fresh → alpha notice → acknowledge');
   await page.goto(`http://localhost:${PORT}/app/`);
@@ -566,15 +573,30 @@ async function enterPin(page, digits) {
   // family A packs Goodnight Moon for Ben
   await page.click('.home-card:has-text("The library")');
   await page.click('.rowitem:has-text("Goodnight Moon")');
-  promptAnswer = benId.toLowerCase();   // sloppy typing is normalized on pack
+  // typed the way a human reads a code over the phone: lowercase, spaces, no dashes
+  promptAnswer = '  cc ' + benId.slice(3).replace('-', ' ').toLowerCase() + ' ';
+  await page.click('#parcel');
+  // packing finishes FIRST, then the hand-off sheet offers buttons — each tap
+  // is a fresh user gesture, so the share sheet is never refused on phones
+  await page.waitForSelector('.handoff [data-hsave]');
+  assert((await page.textContent('.handoff')).includes('packed and ready'), 'hand-off sheet announces the packed parcel');
   const [parcelDl] = await Promise.all([
     page.waitForEvent('download'),
-    page.click('#parcel'),
+    page.click('.handoff [data-hsave]'),
   ]);
-  promptAnswer = '';
+  await page.click('.handoff [data-hdone]');
+  await page.waitForSelector('.handoff', { state: 'detached' });
   const parcelPath = path.join(TMP, 'parcel.zip');
   await parcelDl.saveAs(parcelPath);
   assert(fs.statSync(parcelPath).size > 1000, 'parcel has real content');
+  // the next parcel to the same family: the code comes back as the default
+  lastPromptDefault = null;
+  promptAnswer = null;   // just peeking at the prefill — dismiss the prompt
+  await page.click('#parcel');
+  let waited = 0;
+  while (lastPromptDefault === null && waited < 5000) { await sleep(50); waited += 50; }
+  assert(lastPromptDefault === benId, 'last-used Corner ID is remembered as the prompt default (got ' + lastPromptDefault + ')');
+  promptAnswer = '';
   await page.click('.back'); await page.click('.back'); // book → library → home
 
   step('PARCELS: family B accepts — book, voices and pages land on Ben\'s shelf, marked new');

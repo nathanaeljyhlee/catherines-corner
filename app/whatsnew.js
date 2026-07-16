@@ -14,6 +14,16 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.12.1', slides: [
+        {
+          art: '📦 <span class="arrows">→</span> 📤',
+          sub: 'if a parcel wouldn’t send before — try again',
+          title: 'Parcels hand off surely now',
+          text: 'Sending a book to another family sometimes ended in silence — the phone quietly refused the share sheet after packing. Now the app packs first, then shows “packed and ready” with real Send and Save buttons that always work. Corner IDs also forgive typing now (spaces, small letters, missing dashes), and the last one you used is remembered.',
+        },
+      ],
+    },
+    {
       v: '1.12', slides: [
         {
           art: '🎙 <span class="arrows">→</span> <span class="capart">✍️ …little <span class="hl">bear</span></span>',
