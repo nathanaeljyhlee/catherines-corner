@@ -4,6 +4,7 @@ const { chromium } = require('playwright');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 const PORT = 8907;
@@ -69,27 +70,52 @@ function crc32(bytes) {
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
 function makeZip(entries) {
+  // entries may set {deflate:true} — emitted as method-8, the shape Apple's
+  // "Compress" (and most zip tools) produce when a family re-zips a parcel
   const parts = [], central = [];
   let offset = 0;
   for (const e of entries) {
     const name = Buffer.from(e.name, 'utf8');
-    const crc = crc32(e.bytes), size = e.bytes.length;
+    const data = e.deflate ? zlib.deflateRawSync(e.bytes) : e.bytes;
+    const method = e.deflate ? 8 : 0;
+    const crc = crc32(e.bytes), size = e.bytes.length, csize = data.length;
     const lh = Buffer.alloc(30);
-    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(0, 8);
-    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(size, 18); lh.writeUInt32LE(size, 22); lh.writeUInt16LE(name.length, 26);
-    parts.push(lh, name, e.bytes);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(method, 8);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(csize, 18); lh.writeUInt32LE(size, 22); lh.writeUInt16LE(name.length, 26);
+    parts.push(lh, name, data);
     const ch = Buffer.alloc(46);
     ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8);
-    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(size, 20); ch.writeUInt32LE(size, 24); ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt16LE(method, 10);
+    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(csize, 20); ch.writeUInt32LE(size, 24); ch.writeUInt16LE(name.length, 28);
     ch.writeUInt32LE(offset, 42);
     central.push(ch, name);
-    offset += 30 + name.length + size;
+    offset += 30 + name.length + csize;
   }
   const cd = Buffer.concat(central);
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(entries.length, 8); eocd.writeUInt16LE(entries.length, 10);
   eocd.writeUInt32LE(cd.length, 12); eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, cd, eocd]);
+}
+// Minimal STORE-zip reader (mirror of the app's) — lets tests unpack a real
+// app-made zip and re-zip it the way a phone would mangle it in transit.
+function readZip(buf) {
+  let e = buf.length - 22;
+  while (e >= 0 && buf.readUInt32LE(e) !== 0x06054b50) e--;
+  const count = buf.readUInt16LE(e + 10);
+  let p = buf.readUInt32LE(e + 16);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const size = buf.readUInt32LE(p + 24);
+    const nLen = buf.readUInt16LE(p + 28), xLen = buf.readUInt16LE(p + 30), cLen = buf.readUInt16LE(p + 32);
+    const lho = buf.readUInt32LE(p + 42);
+    const name = buf.slice(p + 46, p + 46 + nLen).toString('utf8');
+    const lnLen = buf.readUInt16LE(lho + 26), lxLen = buf.readUInt16LE(lho + 28);
+    const ds = lho + 30 + lnLen + lxLen;
+    out.push({ name, bytes: buf.slice(ds, ds + size) });
+    p += 46 + nLen + xLen + cLen;
+  }
+  return out;
 }
 function makeV1BackupZip() {
   const wav = makeWav(1);
@@ -644,6 +670,24 @@ async function enterPin(page, digits) {
   await page.click('#nope'); // decline
   await page.waitForSelector('h1:has-text("Keep it safe")');
   assert((await page.textContent('body')).includes('your corner id'.toLowerCase()) || await page.$('#fid'), 'Corner ID surfaced under Keep it safe');
+
+  step('HARDEN: a re-zipped parcel (folder wrapper, Mac junk, real compression) still opens');
+  // what a phone does to a parcel in transit: Files extracts it, the family
+  // re-compresses the folder → DEFLATE entries, a wrapping directory, junk
+  const inner = readZip(fs.readFileSync(parcelPath));
+  const rezipped = makeZip([
+    { name: 'Goodnight Moon parcel/', bytes: Buffer.alloc(0) },
+    ...inner.map(f => ({ name: 'Goodnight Moon parcel/' + f.name, bytes: f.bytes, deflate: true })),
+    { name: 'Goodnight Moon parcel/.DS_Store', bytes: Buffer.from([0, 0, 0, 1]), deflate: true },
+    { name: '__MACOSX/Goodnight Moon parcel/._manifest.json', bytes: Buffer.from('resource-fork junk'), deflate: true },
+  ]);
+  const rezipPath = path.join(TMP, 'parcel-rezipped.zip');
+  fs.writeFileSync(rezipPath, rezipped);
+  await page.setInputFiles('#restorefile', rezipPath);
+  await page.waitForSelector('h1:has-text("Goodnight Moon")');   // fully understood: title, contents, address
+  assert((await page.textContent('body')).includes('was addressed to'), 're-zipped parcel still knows whose it is');
+  await page.click('#nope');
+  await page.waitForSelector('h1:has-text("Keep it safe")');
   await page.click('.back'); // safety → home
 
   step('WHAT\'S NEW: badge appears after an update, walkthrough carousel opens, badge clears');
