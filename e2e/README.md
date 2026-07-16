@@ -15,9 +15,12 @@ owner journey plus the seams that history shows break quietly:
 - told stories, the edit flow, gentle skips, calm end screen
 - **hardening cases**: a quota-failed save stays loud and lossless (draft
   kept, no orphan rows), a corrupted backup zip is refused whole (CRC +
-  completeness checks, nothing written), a hostile invite payload renders
-  inert, a browser without MediaRecorder degrades to import-only, and a
-  broken database opens a calm failure screen instead of a blank page
+  completeness checks, nothing written), a **re-zipped parcel** (extracted
+  by a phone in transit, re-compressed with real DEFLATE, wrapped in a
+  folder with Mac junk files) still opens and knows whose it is, a hostile
+  invite payload renders inert, a browser without MediaRecorder degrades to
+  import-only, and a broken database opens a calm failure screen instead of
+  a blank page
 - **local usage analytics**: pain-point areas counted through the whole
   journey (including failed saves), the "what gets used" screen renders with
   its honesty line and snapshot share, and BOTH live-user migrations are

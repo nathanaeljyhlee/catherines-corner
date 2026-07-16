@@ -14,6 +14,16 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.12.2', slides: [
+        {
+          art: '💬 <span class="arrows">→</span> 📦 <span class="arrows">→</span> 🏠',
+          sub: 'however it arrives — texted, saved, even re-zipped',
+          title: 'Parcels open on the receiving side, always',
+          text: 'A parcel that came by text sometimes wouldn’t open — phones like to unpack zip files, and packing them back up changes their shape. The app now reads a parcel however it arrives, and “Keep it safe” walks you through the save-from-Messages step. If a parcel refused to open for you: it will now.',
+        },
+      ],
+    },
+    {
       v: '1.12.1', slides: [
         {
           art: '📦 <span class="arrows">→</span> 📤',

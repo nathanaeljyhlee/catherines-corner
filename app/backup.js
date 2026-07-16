@@ -91,8 +91,20 @@
     return new Blob([...parts, ...central, new Uint8Array(eocd.buffer)], { type: 'application/zip' });
   }
 
-  // ---------- zip reader (STORE only) ----------
-  function parseZip(buf) {
+  // ---------- zip reader ----------
+  // The app WRITES only STORE zips, but must READ whatever a parcel became on
+  // its journey: iOS Files extracts a tapped zip, and re-compressing that
+  // folder yields a DEFLATE zip with a wrapping folder and __MACOSX junk.
+  // Refusing those is refusing a real family's parcel — so DEFLATE entries
+  // are inflated through the browser's built-in DecompressionStream.
+  async function inflateRaw(raw) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error('This zip is compressed in a way this phone can’t unpack — ask for the original parcel file, or update this device’s browser.');
+    }
+    const out = new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw')));
+    return new Uint8Array(await out.arrayBuffer());
+  }
+  async function parseZip(buf) {
     const dv = new DataView(buf), u8 = new Uint8Array(buf);
     let e = buf.byteLength - 22;
     while (e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
@@ -101,24 +113,31 @@
     let p = dv.getUint32(e + 16, true);
     const dec = new TextDecoder(), out = new Map();
     for (let i = 0; i < count; i++) {
-      if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('The zip file looks damaged.');
-      const method = dv.getUint16(p + 10, true);
-      const size = dv.getUint32(p + 24, true);
-      const nLen = dv.getUint16(p + 28, true), xLen = dv.getUint16(p + 30, true), cLen = dv.getUint16(p + 32, true);
-      const lho = dv.getUint32(p + 42, true);
-      const name = dec.decode(u8.subarray(p + 46, p + 46 + nLen));
-      if (method !== 0) throw new Error('This zip uses compression this app can’t read.');
+      const rec = p;
+      if (dv.getUint32(rec, true) !== 0x02014b50) throw new Error('The zip file looks damaged.');
+      const method = dv.getUint16(rec + 10, true);
+      const csize = dv.getUint32(rec + 20, true);
+      const size = dv.getUint32(rec + 24, true);
+      const nLen = dv.getUint16(rec + 28, true), xLen = dv.getUint16(rec + 30, true), cLen = dv.getUint16(rec + 32, true);
+      const lho = dv.getUint32(rec + 42, true);
+      const name = dec.decode(u8.subarray(rec + 46, rec + 46 + nLen));
+      p = rec + 46 + nLen + xLen + cLen;
+      if (name.endsWith('/')) continue;   // folder entries carry no data
+      if (method !== 0 && method !== 8) throw new Error('This zip uses compression this app can’t read.');
       const lnLen = dv.getUint16(lho + 26, true), lxLen = dv.getUint16(lho + 28, true);
       const dataStart = lho + 30 + lnLen + lxLen;
-      const bytes = u8.subarray(dataStart, dataStart + size);
+      const raw = u8.subarray(dataStart, dataStart + (method === 0 ? size : csize));
+      const bytes = method === 0 ? raw : await inflateRaw(raw);
+      if (method !== 0 && bytes.length !== size) {
+        throw new Error('This backup file is damaged (“' + name + '” doesn’t unpack whole) — nothing was changed. Try another copy.');
+      }
       // Families keep these zips for years — verify every checksum, so a
       // bit-rotted or truncated backup is refused whole instead of restoring
       // silently corrupted voices.
-      if (crc32(bytes) !== dv.getUint32(p + 16, true)) {
+      if (crc32(bytes) !== dv.getUint32(rec + 16, true)) {
         throw new Error('This backup file is damaged (“' + name + '” fails its checksum) — nothing was changed. Try another copy of the backup.');
       }
       out.set(name, bytes);
-      p += 46 + nLen + xLen + cLen;
     }
     return out;
   }
@@ -249,7 +268,19 @@
   // Parse + integrity-check a file WITHOUT writing anything: the UI decides
   // what to do with what's inside (restore a backup / offer to accept a parcel).
   async function inspect(file) {
-    const map = parseZip(await file.arrayBuffer());
+    let map = await parseZip(await file.arrayBuffer());
+    // A parcel that was unpacked on the way (iOS Files extracts a tapped zip)
+    // and zipped back up usually gained a wrapping folder and __MACOSX junk —
+    // find the manifest wherever it landed and read everything beside it.
+    if (!map.has('manifest.json')) {
+      const hit = [...map.keys()].find(k => k.endsWith('/manifest.json') && !k.startsWith('__MACOSX/'));
+      if (hit) {
+        const prefix = hit.slice(0, -'manifest.json'.length);
+        const un = new Map();
+        for (const [k, v] of map) if (k.startsWith(prefix) && k.length > prefix.length) un.set(k.slice(prefix.length), v);
+        map = un;
+      }
+    }
     const mf = map.get('manifest.json');
     if (!mf) throw new Error('No manifest inside — is this a Catherine’s Corner backup or parcel?');
     let m;

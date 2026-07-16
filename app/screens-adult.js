@@ -364,7 +364,9 @@
     const rcard = el(
       '<div class="card" style="margin-top:14px"><div class="kicker">restore · accept a parcel</div>' +
       '<p class="hint" style="margin-top:8px">Bring in a backup from this or another device, or a 📦 parcel another family sent you. Nothing here ever deletes anything.</p>' +
-      '<div class="btn-row"><span class="btn filebtn">⤒ Bring in a backup or parcel<input type="file" id="restorefile" accept=".zip,application/zip"></span></div></div>');
+      '<div class="btn-row"><span class="btn filebtn">⤒ Bring in a backup or parcel<input type="file" id="restorefile" accept=".zip,application/zip,application/x-zip-compressed,application/octet-stream"></span></div>' +
+      '<p class="hint" style="margin-top:10px">Got it in Messages or WhatsApp? Tap the file there → share → <b>Save to Files</b>, then choose it here. ' +
+      'If tapping it in Files unpacked a folder, that’s fine — still choose the original <b>.zip</b>.</p></div>');
     root.appendChild(rcard);
     rcard.querySelector('#restorefile').onchange = async e => {
       const f = e.target.files[0];
