@@ -1,0 +1,15 @@
+name = "catherines-corner-cloud"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET,
+# DATABASE_URL, JWT_SECRET) are provided via .dev.vars for `wrangler dev`
+# (generated from 1Password at runtime, gitignored) and via `wrangler secret put`
+# for production. None are committed.
+#
+# Phase 0 presigns R2 via the S3 API (aws4fetch), so no R2 binding is needed
+# and local `wrangler dev` runs against live R2 + Neon with no Cloudflare login.
+
+[observability]
+enabled = true

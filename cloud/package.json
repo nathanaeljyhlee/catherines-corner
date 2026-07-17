@@ -1,0 +1,22 @@
+{
+  "name": "catherines-corner-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Catherine's Corner Stage 2 cloud API — the only server component (JWT + presigned R2 + Neon).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "node scripts/migrate.mjs",
+    "verify": "node scripts/verify-phase0.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "aws4fetch": "^1.0.20",
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "pg": "^8.13.1",
+    "wrangler": "^4.20.0"
+  }
+}
