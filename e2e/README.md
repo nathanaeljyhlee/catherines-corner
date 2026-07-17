@@ -97,3 +97,42 @@ passing with no fake cloud attached, per the offline regression guarantee.
 If chromium won't launch on this machine (a cached browser revision
 mismatch, not an app problem), set `CC_E2E_CHROMIUM=/path/to/chrome` to point
 at any locally cached Chromium binary.
+
+## v1.15 (share revocation / resumable guest upload / co-parent join)
+
+`v15-revoke.js`, `v15-multipart.js`, `v15-coparent.js` cover the v1.15 cloud
+contract (`snowbear-hq/sprints/2026-07-17/1406/CONTRACT.md`) — share-link
+revocation, resumable multipart guest uploads (>5MB), and owner-approved
+co-parent join, plus the cross-cutting **active-only membership invariant**
+(a `pending` co-parent must read NOTHING). Same two-part shape as Phase 3/4:
+
+- **PART A (contract-level, no browser)** drives the same extended
+  `lib/fake-cloud.js` directly. Fully runnable today — no dependency on
+  app/ or cloud/ landing. `v15-coparent.js` Part A is the security-critical
+  one: it proves a pending co-parent's access is byte-for-byte identical to
+  a total stranger's on every family-scoped route (inbox, backup, shares,
+  accept), then proves the SAME pre-existing family inbox item becomes
+  visible the moment (and only the moment) the owner approves.
+- **PART B (full-stack, Playwright)** is written against the contract's
+  client/UI bullets, but **capability-gated**: each file signs in for real,
+  then probes whether the relevant `Cloud.*` method exists yet
+  (`Cloud.listShares`/`revokeShare`, `Cloud.inboxUploadResumable`,
+  `Cloud.createFamilyInvite`/`joinFamily`/`familyRequests`/`approveMember`/
+  `declineMember`). As of this write **app/cloud.js does not yet implement
+  any of the v1.15 client methods** (client lands separately, in parallel,
+  per the contract), so Part B currently prints a `BLOCKED` message and
+  exits green rather than hard-failing on a client that was never supposed
+  to be there yet. Once the client + screens land, these files start
+  exercising the real UI with no edits needed here.
+
+Run them:
+
+```
+cd e2e && npm install && npm run test:v15
+```
+
+(or `test:v15-revoke` / `test:v15-multipart` / `test:v15-coparent`
+individually.) `lib/fake-cloud.js` was extended in place (not forked) to
+implement the new endpoints — Phase 3/4 keep passing unmodified against the
+same file (verified: `npm run test:cloud` after the v1.15 extension shows no
+behavior change to any pre-existing endpoint).

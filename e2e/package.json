@@ -6,7 +6,11 @@
     "test": "node e2e.js",
     "test:phase3": "node phase3-share.js",
     "test:phase4": "node phase4-inbox.js",
-    "test:cloud": "node phase3-share.js && node phase4-inbox.js"
+    "test:cloud": "node phase3-share.js && node phase4-inbox.js",
+    "test:v15-revoke": "node v15-revoke.js",
+    "test:v15-multipart": "node v15-multipart.js",
+    "test:v15-coparent": "node v15-coparent.js",
+    "test:v15": "node v15-revoke.js && node v15-multipart.js && node v15-coparent.js"
   },
   "devDependencies": {
     "playwright": "^1.50.0"

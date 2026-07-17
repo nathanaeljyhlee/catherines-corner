@@ -279,7 +279,12 @@
         put.disabled = true;
         try {
           prog.textContent = 'Sending… 0%';
-          const { sha256, mime } = await Cloud.inboxUpload(token, blob, (p) => { prog.textContent = 'Sending… ' + Math.round(p * 100) + '%'; });
+          // Hash + type up front so a long reading can ride up as resumable
+          // multipart (a wifi blip only costs the one 5 MB part, not the whole
+          // recording). Small readings still take the plain single-PUT path.
+          const sha256 = await Cloud.sha256Hex(blob);
+          const mime = blob.type || 'audio/mp4';
+          await Cloud.inboxUploadResumable(token, blob, sha256, mime, (p) => { prog.textContent = 'Sending… ' + Math.round(p * 100) + '%'; });
           prog.textContent = 'Almost there…';
           await Cloud.inboxCommit(token, { blobSha256: [sha256], mime, fromName, note });
           DB.metrics.bump('give.sent');

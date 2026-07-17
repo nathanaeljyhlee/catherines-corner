@@ -15,6 +15,14 @@
   'use strict';
   const g = globalThis;
   const API = g.CC_CLOUD_API || 'https://catherines-corner-cloud.snowbear-llc.workers.dev';
+  const PART_SIZE = 5 * 1024 * 1024;   // S3/R2 multipart minimum (every part but the last)
+  const PART_RETRIES = 3;              // a dropped part re-PUTs itself, up to this many tries
+
+  // A co-parent redeeming a #join= link is signed in but must NOT auto-claim the
+  // device's own local Corner ID as a brand-new family while waiting for the
+  // owner to approve — that would strand them on an empty solo family and the
+  // approval could never adopt the owner's shelf. Boot sets this on the join path.
+  let suppressAutoClaim = false;
 
   async function sha256Hex(blob) {
     const buf = blob.arrayBuffer ? await blob.arrayBuffer() : blob;
@@ -49,6 +57,11 @@
       if (mine.familyId !== local && g.DB.settings) await g.DB.settings.set('familyId', mine.familyId);
       return mine.familyId;
     }
+    // Never auto-claim on the co-parent join path, nor for an account already
+    // awaiting approval (pendingFamilyId set but not yet active). Stay put —
+    // once the owner approves, /family/mine returns the active id and the next
+    // ensureIdentity adopts it. Returns null so callers stay quiet meanwhile.
+    if (suppressAutoClaim || (mine && mine.pendingFamilyId)) return null;
     await api('/family/claim', { method: 'POST', body: JSON.stringify({ familyId: local }) });
     return local;
   }
@@ -73,6 +86,7 @@
   // (dedup), so a second backup with no new recordings uploads ~0 bytes.
   async function pushBackup(deviceLabel) {
     const familyId = await ensureIdentity();
+    if (!familyId) throw new Error('no family to back up to yet');   // pending co-parent — quiet
     // Reconcile first: fold in whatever the cloud already holds for this family
     // — another device's readings, or this account's pre-cloud library arriving
     // on a second device — so the manifest we write is the UNION and no
@@ -107,7 +121,8 @@
   // zip restore uses (Backup.importBackup): corners merge by name, ids collision-
   // safe. Safe to run on a fresh device.
   async function pullBackup() {
-    await ensureIdentity();
+    const fam = await ensureIdentity();
+    if (!fam) throw new Error('no family yet');   // pending co-parent — nothing to pull
     const latest = await api('/backup/latest', {});
     const manifest = await (await fetch(latest.url)).json();
     const map = new Map();
@@ -261,9 +276,113 @@
     });
   }
 
+  // Guest side, long recordings: resumable multipart. A single PUT is fine for
+  // the small stuff, but a 20-minute reading is tens of MB — a wifi blip
+  // mid-upload shouldn't cost the whole thing. So above 5 MB we init a multipart
+  // upload, PUT each 5 MB part on its own (a dropped part re-PUTs just itself),
+  // capture each part's ETag, then complete. Give-up aborts so R2 keeps no
+  // orphan parts. Progress is foreground and continuous across the parts.
+  // Signature matches the contract: the caller hands us the pre-hashed sha + mime.
+  async function inboxUploadResumable(inviteToken, blob, sha256, mime, onProgress) {
+    const enc = encodeURIComponent(inviteToken);
+    // Small enough: the existing single-PUT path, unchanged.
+    if (blob.size <= PART_SIZE) {
+      const begin = await api('/inbox/' + enc + '/upload', {
+        method: 'POST', body: JSON.stringify({ blobs: [{ sha256, bytes: blob.size, mime }] }),
+      });
+      const up = (begin.uploads || []).find((u) => u.sha256 === sha256) || (begin.uploads || [])[0];
+      if (up && up.url) await putWithProgress(up.url, blob, onProgress);
+      else if (onProgress) onProgress(1);            // already present (dedup) — nothing to send
+      return { sha256, mime };
+    }
+    // Long recording: multipart.
+    const partCount = Math.ceil(blob.size / PART_SIZE);
+    const init = await api('/inbox/' + enc + '/upload/init', {
+      method: 'POST', body: JSON.stringify({ sha256, mime, parts: partCount }),
+    });
+    const uploadId = init.uploadId;
+    const urls = new Map((init.parts || []).map((p) => [p.partNumber, p.url]));
+    const done = [];        // { partNumber, etag } — in order, for complete
+    let baseLoaded = 0;     // bytes fully landed in completed parts (for aggregate progress)
+    try {
+      for (let n = 1; n <= partCount; n++) {
+        const start = (n - 1) * PART_SIZE;
+        const partBlob = blob.slice(start, Math.min(start + PART_SIZE, blob.size));
+        const url = urls.get(n);
+        if (!url) throw new Error('no presigned URL for part ' + n);
+        let etag = null, lastErr = null;
+        for (let attempt = 0; attempt < PART_RETRIES && !etag; attempt++) {
+          try {
+            etag = await putPartWithProgress(url, partBlob, (loaded) => {
+              if (onProgress) onProgress(Math.min(1, (baseLoaded + loaded) / blob.size));
+            });
+            if (!etag) lastErr = new Error('part ' + n + ' returned no ETag');
+          } catch (e) { lastErr = e; }
+        }
+        if (!etag) throw lastErr || new Error('part ' + n + ' failed');
+        done.push({ partNumber: n, etag });
+        baseLoaded += partBlob.size;
+        if (onProgress) onProgress(Math.min(1, baseLoaded / blob.size));
+      }
+    } catch (e) {
+      // Give up cleanly: tell R2 to drop the parts so nothing orphans.
+      try { await api('/inbox/' + enc + '/upload/abort', { method: 'POST', body: JSON.stringify({ sha256, uploadId }) }); } catch (_) {}
+      throw e;
+    }
+    await api('/inbox/' + enc + '/upload/complete', {
+      method: 'POST', body: JSON.stringify({ sha256, uploadId, parts: done }),
+    });
+    return { sha256, mime };
+  }
+
+  // Presigned PUT of one multipart part, with foreground progress, resolving to
+  // the part's ETag (read from the response header — CompleteMultipartUpload
+  // needs it). No content-type header, same as every other presigned PUT here.
+  // NOTE: reading ETag off a cross-origin R2 response requires the bucket CORS
+  // to expose it (Access-Control-Expose-Headers: ETag) — a worker/bucket config.
+  function putPartWithProgress(url, blob, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url);
+      if (xhr.upload && onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded); };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
+        ? resolve(xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag'))
+        : reject(new Error('part upload -> ' + xhr.status));
+      xhr.onerror = () => reject(new Error('The upload didn’t go through — check the connection and try again.'));
+      xhr.send(blob);
+    });
+  }
+
+  // =========================================================
+  // PHASE 5a — cancel a share link (revocation)
+  // =========================================================
+  // List the parcel links this family has live, so a grown-up can pull one back.
+  async function listShares() { return api('/shares', {}); }               // { shares: [{ token, title, url, createdAt, expiresAt }] }
+  // Cancel one — anyone still holding it gets a calm 404 afterward.
+  async function revokeShare(token) { return api('/share/' + encodeURIComponent(token) + '/revoke', { method: 'POST', body: '{}' }); }  // { ok:true }
+
+  // =========================================================
+  // PHASE 5b — co-parent join (owner-approved second grown-up)
+  // =========================================================
+  // Owner: mint a join link a co-parent redeems (they sign in, land pending).
+  async function createFamilyInvite() { return api('/family/invite', { method: 'POST', body: '{}' }); }   // { joinToken, url }
+  // Co-parent: redeem a join token. { status:'pending'|'active', familyId }.
+  async function joinFamily(token) { return api('/family/join', { method: 'POST', body: JSON.stringify({ token }) }); }
+  // Owner: who is waiting to be let in.
+  async function familyRequests() { return api('/family/requests', {}); }  // { requests: [{ accountId, email, requestedAt }] }
+  // Owner: let a co-parent in / turn them away.
+  async function approveMember(accountId) { return api('/family/members/' + encodeURIComponent(accountId) + '/approve', { method: 'POST', body: '{}' }); }
+  async function declineMember(accountId) { return api('/family/members/' + encodeURIComponent(accountId) + '/decline', { method: 'POST', body: '{}' }); }
+
+  // Boot flips this on before routing a #join= link, so no cloud touch on the
+  // join path auto-claims the joiner's own local corner (see ensureIdentity).
+  function setSuppressAutoClaim(v) { suppressAutoClaim = !!v; }
+
   g.Cloud = {
     pushBackup, pullBackup, autoBackup, claim, sha256Hex, enumerate, API,
     pushParcel, pullParcel,
-    createInvite, checkInbox, fetchArrivalBlob, acceptInbox, inboxUpload, inboxCommit,
+    createInvite, checkInbox, fetchArrivalBlob, acceptInbox, inboxUpload, inboxCommit, inboxUploadResumable,
+    listShares, revokeShare,
+    createFamilyInvite, joinFamily, familyRequests, approveMember, declineMember, setSuppressAutoClaim,
   };
 })();
