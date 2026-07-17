@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.13.3';
+  const APP_VERSION = '1.13.4';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -227,6 +227,14 @@
     await checkSharedInbox();
     render();
     if (magicMsg) toast(magicMsg);
+    // On open: if signed in, quietly keep the cloud backup fresh (idempotent,
+    // silent when offline). This is what makes cloud backup "seamless" after the
+    // one-time sign-in — new recordings ride up on their own.
+    if (window.Cloud && window.CloudAuth && CloudAuth.isSignedIn()) {
+      DB.settings.get('cloudLastBackup').then((last) => {
+        if (!last || Date.now() - last > 12 * 3600 * 1000) Cloud.autoBackup('open');
+      }).catch(() => {});
+    }
     // Devices already holding readings should be marked must-keep even if
     // they saved before persistence was requested (or the browser said no
     // once) — re-ask quietly whenever there is something worth keeping.

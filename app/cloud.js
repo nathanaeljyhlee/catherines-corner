@@ -119,5 +119,17 @@
     return g.Backup.importBackup(manifest, map);
   }
 
-  g.Cloud = { pushBackup, pullBackup, claim, sha256Hex, enumerate, API };
+  // Quiet, idempotent auto-backup: run right after sign-in (so a pre-cloud
+  // library uploads itself, no second tap) and on app open when stale. Safe to
+  // call anytime — it dedups, and it stays silent when offline or not signed in.
+  async function autoBackup(reason) {
+    try {
+      if (!(g.CloudAuth && g.CloudAuth.isSignedIn())) return null;
+      const readings = g.DB && g.DB.readings ? await g.DB.readings.all() : [];
+      if (!readings.length) return null;
+      return await pushBackup(reason || 'auto');
+    } catch (e) { return null; }   // offline / transient — a quiet retry next time
+  }
+
+  g.Cloud = { pushBackup, pullBackup, autoBackup, claim, sha256Hex, enumerate, API };
 })();
