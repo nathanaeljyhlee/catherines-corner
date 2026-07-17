@@ -1,9 +1,11 @@
-/* Catherine's Corner — CloudAuth: magic-link sign-in for cloud backup.
-   Worker-native (Resend) magic-link: enter email -> get a link -> tap it ->
-   the app trades it for a 30-day session token, stored on-device. cloud.js
-   reads CloudAuth.token() for its Bearer. The token is the ONLY thing that lets
-   a device reach this family's cloud backup — the semi-public Corner ID never
-   grants access. */
+/* Catherine's Corner — CloudAuth: email sign-in for cloud backup.
+   Worker-native (Resend): enter email -> get a 6-digit CODE + a same-device
+   link. The CODE is primary — you read it on any device (your phone) and type
+   it into the app, which matters on a shared tablet / installed PWA where a
+   link would open on the wrong device or in Safari, not the app. Either way the
+   app gets a 30-day session token, stored on-device. cloud.js reads
+   CloudAuth.token() for its Bearer — the ONLY thing that reaches this family's
+   cloud backup; the semi-public Corner ID never grants access. */
 (function () {
   'use strict';
   const g = globalThis;
@@ -42,6 +44,7 @@
     isSignedIn: () => !!_token,
     token: () => _token,
     email: () => _email,
+    // Step 1: email me a code (+ same-device link).
     async signIn(email) {
       const r = await fetch(API + '/auth/request', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -50,6 +53,18 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || 'Could not send the sign-in email.');
       return true;
+    },
+    // Step 2: type the emailed code to finish signing in (works cross-device).
+    async verifyCode(email, code) {
+      const r = await fetch(API + '/auth/verify', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: String(email || '').trim(), code: String(code || '').replace(/\D/g, '') }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'That code didn’t work.');
+      _token = j.token; _email = j.email;
+      if (g.DB && g.DB.settings) { await g.DB.settings.set('cloudSession', _token); await g.DB.settings.set('cloudEmail', _email); }
+      return { email: _email };
     },
     async signOut() {
       _token = null; _email = null;
