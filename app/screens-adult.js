@@ -113,7 +113,7 @@
       '<div class="card"><div class="field"><label>The child’s name</label>' +
       '<input type="text" id="nm" placeholder="e.g. Mei" maxlength="30"></div>' +
       '<button class="btn primary big" id="save">Make the corner</button>' +
-      '<p class="hint" style="margin-top:12px">Moving from another device? Make the corner, then restore your backup under “Keep it safe.”</p></div>');
+      '<p class="hint" style="margin-top:12px">Moving from another device? Make the corner, then under “Keep it safe” <b>sign in with your email to pull your cloud backup</b> — or bring in a backup file.</p></div>');
     root.appendChild(card);
     card.querySelector('#save').onclick = async () => {
       const v = card.querySelector('#nm').value.trim();
@@ -372,7 +372,7 @@
     if (window.Cloud && window.CloudAuth) {
       const cloudLast = await DB.settings.get('cloudLastBackup');
       const ccard = el('<div class="card" style="margin-top:14px"><div class="kicker">cloud backup</div>' +
-        '<p class="hint" style="margin-top:8px">Keep a copy safely in the cloud, so a lost or broken device never means losing the voices. Your recordings stay private to your family and are reached only after you sign in.' +
+        '<p class="hint" style="margin-top:8px">Keep a copy safely in the cloud, so a lost or broken device never means losing the voices. You sign in with your email (this is your cloud account — separate from the grown-up code on this device), and your recordings stay private to your family.' +
         (cloudLast ? ' · last cloud backup ' + new Date(cloudLast).toLocaleDateString() : '') + '</p><div id="cloudbody"></div></div>');
       root.appendChild(ccard);
       const body = ccard.querySelector('#cloudbody');
@@ -393,14 +393,30 @@
         };
         body.querySelector('#cout').onclick = async (e) => { e.preventDefault(); await CloudAuth.signOut(); render(); };
       };
+      // Step 2: type the emailed code (works cross-device — read on your phone,
+      // type on the tablet — unlike a link that would open on the wrong device).
+      const codeStep = (email) => {
+        body.innerHTML = '<p class="hint" style="margin:2px 0 8px">📧 We emailed a 6-digit code to <b>' + esc(email) + '</b>. Read it on any device and type it here — it works once, for 15 minutes.</p>' +
+          '<div class="btn-row" style="gap:8px;flex-wrap:wrap"><input type="text" id="ccode" placeholder="6-digit code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" style="flex:1;min-width:130px;padding:10px;border:1px solid #d8cdbb;border-radius:10px;font:inherit;letter-spacing:3px"><button class="btn primary" id="cverify">Sign in</button></div>' +
+          '<p class="hint" style="margin-top:8px"><a href="#" id="cresend">Send a new code</a> · on this same device you can also just tap the link in the email.</p>';
+        body.querySelector('#cverify').onclick = async () => {
+          const code = body.querySelector('#ccode').value.trim();
+          if (!code) return toast('Enter the code from your email.');
+          const b = body.querySelector('#cverify'); b.disabled = true; b.textContent = 'Signing in…';
+          try { await CloudAuth.verifyCode(email, code); toast('Signed in — your recordings can now be backed up.'); render(); }
+          catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Sign in'; }
+        };
+        body.querySelector('#cresend').onclick = async (e) => { e.preventDefault(); try { await CloudAuth.signIn(email); toast('A new code is on its way.'); } catch (err) { toast(err.message); } };
+      };
+      // Step 1: enter email to get a code.
       const signedOut = () => {
-        body.innerHTML = '<div class="btn-row" style="gap:8px;flex-wrap:wrap"><input type="email" id="cemail" placeholder="your email" autocomplete="email" inputmode="email" style="flex:1;min-width:170px;padding:10px;border:1px solid #d8cdbb;border-radius:10px;font:inherit"><button class="btn primary" id="csend">✉️ Email me a sign-in link</button></div>';
+        body.innerHTML = '<div class="btn-row" style="gap:8px;flex-wrap:wrap"><input type="email" id="cemail" placeholder="your email" autocomplete="email" inputmode="email" style="flex:1;min-width:170px;padding:10px;border:1px solid #d8cdbb;border-radius:10px;font:inherit"><button class="btn primary" id="csend">✉️ Email me a code</button></div>';
         body.querySelector('#csend').onclick = async () => {
           const email = body.querySelector('#cemail').value.trim();
           if (!email) return toast('Enter your email first.');
           const b = body.querySelector('#csend'); b.disabled = true; b.textContent = 'Sending…';
-          try { await CloudAuth.signIn(email); body.innerHTML = '<p class="hint">📧 Check <b>' + esc(email) + '</b> for a sign-in link. It works once and expires in 15 minutes — open it on this device.</p>'; }
-          catch (e) { toast(e.message); b.disabled = false; b.textContent = '✉️ Email me a sign-in link'; }
+          try { await CloudAuth.signIn(email); codeStep(email); }
+          catch (e) { toast(e.message); b.disabled = false; b.textContent = '✉️ Email me a code'; }
         };
       };
       (CloudAuth.isSignedIn() ? signedIn : signedOut)();

@@ -1,15 +1,17 @@
 // Catherine's Corner — Stage 2 cloud API Worker
 //
-// The ONLY server component + its own tiny auth authority (magic-link via
-// Resend). Verifies a session token, resolves the caller's family from Postgres
-// membership, and issues short-lived presigned R2 URLs so blobs upload/download
-// DIRECTLY to R2 and never transit this worker (ADR-0001 driver #3).
+// The ONLY server component + its own tiny auth authority. Verifies a session
+// token, resolves the caller's family from Postgres membership, and issues
+// short-lived presigned R2 URLs so blobs upload/download DIRECTLY to R2 and
+// never transit this worker (ADR-0001 driver #3).
 //
-// AUTH (Phase 1b — founder-directed pivot from Neon Auth to Resend magic-link):
-//   /auth/request { email }  -> emails a single-use magic link (15 min).
-//   /auth/verify  { token }  -> a session JWT (30 days), stored by the app.
-//   Backup routes verify the session JWT; the FAMILY you may touch is resolved
-//   from Postgres membership, never the semi-public Corner ID.
+// AUTH (email sign-in via Resend):
+//   /auth/request { email }  -> emails a 6-digit CODE (primary) + a same-device
+//                               magic link (convenience). One active code/email.
+//   /auth/verify  { email, code } | { token }  -> a 30-day session JWT.
+//   The CODE is the right primitive for a shared tablet / installed PWA (a link
+//   opens on the wrong device or in Safari, not the app). Codes are hashed,
+//   single-use, expire in 15 min, and lock after 5 wrong tries.
 //   Test path = HS256 `fam` token, accepted ONLY when env.TEST_MODE === '1'.
 
 import { AwsClient } from 'aws4fetch'
@@ -26,13 +28,21 @@ const CORS = {
 const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json', ...CORS } })
 const secret = (s) => enc.encode(s)
 
+async function sha256hex(s) {
+  const h = await crypto.subtle.digest('SHA-256', enc.encode(s))
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+function sixDigitCode() {
+  const a = new Uint32Array(1); crypto.getRandomValues(a)
+  return String(100000 + (a[0] % 900000))
+}
+
 // --- tokens -------------------------------------------------------------
 const mintMagic = (env, email, jti) =>
   new SignJWT({ email, purpose: 'magic', jti }).setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('15m').sign(secret(env.MAGIC_SECRET))
 const mintSession = (env, accountId, email) =>
   new SignJWT({ sub: accountId, email, purpose: 'session' }).setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('30d').sign(secret(env.SESSION_SECRET))
 
-// { accountId, email } for a real session, { testFam } for the test path, or { err }.
 async function auth(request, env) {
   const m = (request.headers.get('authorization') || '').match(/^Bearer\s+(.+)$/i)
   if (!m) return { err: json(401, { error: 'missing bearer token' }) }
@@ -62,9 +72,9 @@ async function presign(env, k, method, expires = 600) {
 
 // --- DB -----------------------------------------------------------------
 const db = (env) => neon(env.DATABASE_URL)
+const normEmail = (e) => String(e || '').trim().toLowerCase()
 async function ensureAccount(sql, email) {
-  const authUserId = 'email:' + email
-  const rows = await sql`INSERT INTO account (auth_user_id, email) VALUES (${authUserId}, ${email})
+  const rows = await sql`INSERT INTO account (auth_user_id, email) VALUES (${'email:' + email}, ${email})
                          ON CONFLICT (auth_user_id) DO UPDATE SET email = EXCLUDED.email RETURNING id`
   return rows[0].id
 }
@@ -75,17 +85,20 @@ async function resolveFamily(sql, a) {
 }
 
 // --- email --------------------------------------------------------------
-async function sendMagicEmail(env, email, link) {
+async function sendSignInEmail(env, email, code, link) {
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;max-width:440px;margin:0 auto;color:#2b2b2b">
     <h2 style="font-weight:600">Sign in to Catherine's Corner</h2>
-    <p>Tap the button to turn on cloud backup for your corner. This link works once and expires in 15 minutes.</p>
-    <p style="margin:28px 0"><a href="${link}" style="background:#6b4f8a;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:600">Sign in</a></p>
-    <p style="color:#888;font-size:13px">If you didn't ask to sign in, you can ignore this email — nothing happens until the link is opened.</p>
+    <p>Enter this code in the app to turn on cloud backup:</p>
+    <p style="font-size:34px;font-weight:700;letter-spacing:8px;margin:18px 0;color:#6b4f8a">${code}</p>
+    <p style="color:#888;font-size:13px">It works once and expires in 15 minutes.</p>
+    <hr style="border:none;border-top:1px solid #eee;margin:20px 0">
+    <p style="color:#888;font-size:13px">On the same device? You can just <a href="${link}" style="color:#6b4f8a">tap here to sign in</a>.</p>
+    <p style="color:#aaa;font-size:12px">If you didn't ask to sign in, ignore this email — nothing happens until the code is entered.</p>
   </div>`
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { authorization: 'Bearer ' + env.RESEND_API_KEY, 'content-type': 'application/json' },
-    body: JSON.stringify({ from: env.RESEND_FROM, to: email, subject: 'Sign in to Catherine\'s Corner', html }),
+    body: JSON.stringify({ from: env.RESEND_FROM, to: email, subject: `Your Catherine's Corner sign-in code: ${code}`, html }),
   })
   return r.ok
 }
@@ -98,32 +111,52 @@ export default {
     if (path === '/health') return json(200, { ok: true, service: 'catherines-corner-cloud', phase: 1 })
     const sql = db(env)
 
-    // --- auth: request a magic link ---
+    // Request a sign-in code (+ same-device link)
     if (path === '/auth/request' && method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      const email = String(body.email || '').trim().toLowerCase()
+      const email = normEmail(body.email)
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(400, { error: 'a valid email is required' })
-      const jti = crypto.randomUUID()
-      const token = await mintMagic(env, email, jti)
+      const code = sixDigitCode()
+      const codeHash = await sha256hex(code)
+      await sql`INSERT INTO auth_code (email, code_hash, expires_at, attempts, used)
+                VALUES (${email}, ${codeHash}, now() + interval '15 minutes', 0, false)
+                ON CONFLICT (email) DO UPDATE SET code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at, attempts = 0, used = false, created_at = now()`
+      const token = await mintMagic(env, email, crypto.randomUUID())
       const link = env.APP_URL.replace(/\/+$/, '') + '/#magic=' + encodeURIComponent(token)
-      const sent = await sendMagicEmail(env, email, link)
-      // never reveal whether the address exists; report send failures generically
-      return sent ? json(200, { ok: true }) : json(502, { error: 'could not send the email; try again' })
+      const sent = await sendSignInEmail(env, email, code, link)
+      // TEST_MODE (dev only) echoes the code so the E2E can verify it; never set in prod.
+      return sent ? json(200, { ok: true, ...(env.TEST_MODE === '1' ? { code } : {}) }) : json(502, { error: 'could not send the email; try again' })
     }
 
-    // --- auth: verify a magic link -> session token ---
+    // Verify a code OR a same-device link -> session token
     if (path === '/auth/verify' && method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      let payload
-      try { ({ payload } = await jwtVerify(String(body.token || ''), secret(env.MAGIC_SECRET), { algorithms: ['HS256'] })) }
-      catch (_) { return json(403, { error: 'this sign-in link is invalid or has expired' }) }
-      if (payload.purpose !== 'magic' || !payload.email || !payload.jti) return json(403, { error: 'invalid link' })
-      const used = await sql`INSERT INTO magic_used (jti, email) VALUES (${payload.jti}, ${payload.email})
-                             ON CONFLICT (jti) DO NOTHING RETURNING jti`
-      if (!used.length) return json(403, { error: 'this sign-in link has already been used' })
-      const accountId = await ensureAccount(sql, payload.email)
-      const session = await mintSession(env, accountId, payload.email)
-      return json(200, { token: session, email: payload.email })
+      let email = null
+      if (body.token) {
+        let payload
+        try { ({ payload } = await jwtVerify(String(body.token), secret(env.MAGIC_SECRET), { algorithms: ['HS256'] })) }
+        catch (_) { return json(403, { error: 'this sign-in link is invalid or has expired' }) }
+        if (payload.purpose !== 'magic' || !payload.email || !payload.jti) return json(403, { error: 'invalid link' })
+        const used = await sql`INSERT INTO magic_used (jti, email) VALUES (${payload.jti}, ${payload.email})
+                               ON CONFLICT (jti) DO NOTHING RETURNING jti`
+        if (!used.length) return json(403, { error: 'this sign-in link has already been used' })
+        email = normEmail(payload.email)
+      } else if (body.email && body.code) {
+        email = normEmail(body.email)
+        const code = String(body.code).replace(/\D/g, '')
+        const row = (await sql`SELECT code_hash, attempts FROM auth_code WHERE email = ${email} AND used = false AND expires_at > now()`)[0]
+        if (!row) return json(403, { error: 'that code has expired — request a new one' })
+        if (row.attempts >= 5) return json(403, { error: 'too many tries — request a new code' })
+        if ((await sha256hex(code)) !== row.code_hash) {
+          await sql`UPDATE auth_code SET attempts = attempts + 1 WHERE email = ${email}`
+          return json(403, { error: 'that code is not right' })
+        }
+        await sql`UPDATE auth_code SET used = true WHERE email = ${email}`
+      } else {
+        return json(400, { error: 'email + code (or a link token) required' })
+      }
+      const accountId = await ensureAccount(sql, email)
+      return json(200, { token: await mintSession(env, accountId, email), email })
     }
 
     // --- everything below needs a session ---
@@ -146,9 +179,8 @@ export default {
       return json(403, { error: 'this Corner is already claimed by another account' })
     }
 
-    // Which family does THIS account already belong to? A new device signs in
-    // and adopts this instead of claiming its own local Corner ID — that's what
-    // makes "back up on device A, restore on device B" work for one person.
+    // Which family does THIS account already belong to? A new device adopts this
+    // instead of claiming its own local Corner ID (multi-device support).
     if (path === '/family/mine' && method === 'GET') {
       if (a.testFam) return json(200, { familyId: a.testFam })
       const rows = await sql`SELECT family_id FROM family_member WHERE account_id = ${a.accountId} ORDER BY created_at LIMIT 1`
