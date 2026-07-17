@@ -63,3 +63,37 @@ cd e2e && npm install && npm test
 
 No app dependencies change — the suite serves the repo statically and drives
 it, the same way a phone would.
+
+## Stage 2 Phase 3 + Phase 4 (share links / invite uploads)
+
+`phase3-share.js` and `phase4-inbox.js` cover the Stage 2 cloud contract
+(`snowbear-hq/sprints/2026-07-17/1156/CONTRACT.md`) — Phase 3 share links and
+Phase 4 invite-upload/inbox. Each file has two halves:
+
+- **PART A (contract-level, no browser)** drives `lib/fake-cloud.js` — a
+  keyless, in-memory fake of the Cloudflare Worker (same pattern as e2e.js's
+  own fake telemetry collector) — directly over HTTP. Covers every endpoint
+  in the contract table, both isolation invariants (a hostile second family
+  can't read/accept another family's inbox), and both calm-refusal invariants
+  (garbage/expired share and invite tokens). This half has no dependency on
+  the app or worker and runs in under a second.
+- **PART B (full-stack, Playwright)** drives the REAL app against the fake
+  cloud (`window.CC_CLOUD_API` override) — real sign-in, real recording, the
+  real "🔗 Send as a link" / "🔗 record on the shelf" buttons, the real
+  `#parcel=`/`#give=` boot-hash handling, the real guest give-page, and the
+  real "check for arrivals" → arrived-card → accept flow.
+
+Run them:
+
+```
+cd e2e && npm install && npm run test:cloud
+```
+
+(or `npm run test:phase3` / `npm run test:phase4` individually). `lib/`
+holds the shared harness (`harness.js`) and the fake-cloud server
+(`fake-cloud.js`) both specs import — `e2e.js` itself is untouched and keeps
+passing with no fake cloud attached, per the offline regression guarantee.
+
+If chromium won't launch on this machine (a cached browser revision
+mismatch, not an app problem), set `CC_E2E_CHROMIUM=/path/to/chrome` to point
+at any locally cached Chromium binary.

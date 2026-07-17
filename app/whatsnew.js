@@ -14,6 +14,22 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.14', slides: [
+        {
+          art: '📦 <span class="arrows">→</span> 🔗 <span class="arrows">→</span> 🏠',
+          sub: 'no file to find, no Corner ID to type',
+          title: 'Send a recording as a link',
+          text: 'Sharing a book with another family is one tap now. On a book’s page, choose “Send as a link” and you get a little web link to text or email however you like. They tap it, see what arrived, and add it straight to their child’s shelf. Making a link tucks that one recording safely in the cloud so the link can carry it, and it works for 30 days. Sending a plain file still works too.',
+        },
+        {
+          art: '🎁 <span class="arrows">→</span> 🏠',
+          sub: 'a loved one records, it lands on your shelf',
+          title: 'Recordings can arrive on their own',
+          text: 'Send someone a “record on the shelf” link. They read right in the link, tap send, and it turns up under “Keep it safe” as “A recording from Grandma arrived.” Tap to add it and it becomes a reading on the shelf. Nothing saves until you add it, and it never replaces anything already there.',
+        },
+      ],
+    },
+    {
       v: '1.13', slides: [
         {
           art: '📱 <span class="arrows">→</span> ☁️ <span class="arrows">→</span> 📱',

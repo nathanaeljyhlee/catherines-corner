@@ -131,5 +131,139 @@
     } catch (e) { return null; }   // offline / transient — a quiet retry next time
   }
 
-  g.Cloud = { pushBackup, pullBackup, autoBackup, claim, sha256Hex, enumerate, API };
+  // =========================================================
+  // PHASE 3 — share links (a parcel that travels as a URL, not a file)
+  // =========================================================
+  // Push a parcel (manifest + its files, from Backup.packParcel) to the cloud
+  // and mint a share token. Blobs upload content-addressed through the SAME
+  // /backup/begin dedup path a backup uses — a reading already backed up rides
+  // up as ~0 bytes. Then /share records the manifest and returns a #parcel= link.
+  //
+  // NOTE (contract deviation, flagged): the contract sketches
+  // `pushParcel(manifest, blobs)` with pre-hashed blobs. We take `files`
+  // ({name, blob}) instead and hash HERE, so the filename→sha map (`_blobShas`,
+  // exactly what backups use) is built in one place and the receiver can rebuild
+  // filename→Blob. The HTTP shapes to /backup/begin and /share are unchanged.
+  async function pushParcel(manifest, files) {
+    await ensureIdentity();                          // first cloud touch claims the family (avoids the 409)
+    const blobShas = {};
+    const entries = [];
+    for (const f of files) {
+      const blob = f.blob || new Blob([f.bytes], { type: f.mime || 'application/octet-stream' });
+      const sha = await sha256Hex(blob);
+      blobShas[f.name] = sha;                        // filename -> sha, so the receiver rebuilds the map
+      entries.push({ sha256: sha, blob, bytes: blob.size, mime: blob.type || 'application/octet-stream' });
+    }
+    manifest._blobShas = blobShas;                   // rides inside the manifest JSON the server stores verbatim
+    const begin = await api('/backup/begin', {
+      method: 'POST',
+      body: JSON.stringify({ blobs: entries.map((e) => ({ sha256: e.sha256, bytes: e.bytes, mime: e.mime })) }),
+    });
+    const blobFor = new Map(entries.map((e) => [e.sha256, e.blob]));
+    for (const u of (begin.uploads || [])) {
+      if (!u.url) continue;                          // already in the cloud (dedup)
+      const r = await fetch(u.url, { method: 'PUT', body: blobFor.get(u.sha256) });
+      if (!r.ok) throw new Error('parcel blob upload ' + u.sha256 + ' -> ' + r.status);
+    }
+    const title = manifest.book ? manifest.book.title
+      : ((manifest.readings && manifest.readings[0] && manifest.readings[0].title) || 'A reading');
+    return api('/share', {
+      method: 'POST',
+      body: JSON.stringify({ manifest, blobSha256: entries.map((e) => e.sha256), title, toFamilyId: manifest.to || null }),
+    });                                              // { token, url }
+  }
+
+  // Pull a shared parcel by token and shape it EXACTLY as Backup.importParcel
+  // wants: { manifest, map } where map is filename -> bytes. No auth needed — the
+  // token is the capability. A 404 (expired/garbage) bubbles up as an Error with
+  // "404" in it, for a calm message at the call site.
+  async function pullParcel(token) {
+    const res = await api('/share/' + encodeURIComponent(token), { method: 'GET' });
+    const manifest = res.manifest || {};
+    const bySha = new Map((res.blobs || []).map((b) => [b.sha256, b.url]));
+    const map = new Map();
+    for (const [name, sha] of Object.entries(manifest._blobShas || {})) {
+      const url = bySha.get(sha);
+      if (!url) continue;
+      map.set(name, new Uint8Array(await (await fetch(url)).arrayBuffer()));
+    }
+    return { manifest, map };
+  }
+
+  // =========================================================
+  // PHASE 4 — invite uploads / inbox ("record at will → put it on the shelf")
+  // =========================================================
+  // Parent side: mint an invite link a loved one records into.
+  async function createInvite(opts) {
+    opts = opts || {};
+    await ensureIdentity();                          // first cloud touch claims the family (avoids the 409), same as pushParcel
+    return api('/invite', {
+      method: 'POST',
+      body: JSON.stringify({ kidName: opts.kidName || null, bookTitle: opts.bookTitle || null, expiresDays: opts.expiresDays || 30 }),
+    });                                              // { inviteToken, url }
+  }
+
+  // Parent side: what's waiting to be tucked in. Quiet by design at the call site.
+  async function checkInbox() {
+    return api('/inbox', {});                        // { items: [{id, fromName, note, blobSha256, mime, createdAt, blobUrl}] }
+  }
+
+  // Parent side: fetch the audio behind an inbox item (presigned GET). Lives here
+  // so no other module ever touches the network.
+  async function fetchArrivalBlob(item) {
+    const r = await fetch(item.blobUrl);
+    if (!r.ok) throw new Error('arrival download -> ' + r.status);
+    return new Blob([await r.arrayBuffer()], { type: item.mime || 'audio/mp4' });
+  }
+
+  // Parent side: mark an item received (it leaves the inbox).
+  async function acceptInbox(id) {
+    return api('/inbox/' + encodeURIComponent(id) + '/accept', { method: 'POST', body: '{}' });
+  }
+
+  // Guest side (no session — the invite token in the path is the capability):
+  // presign, then PUT the bytes with FOREGROUND progress (XHR, since fetch has no
+  // upload-progress event). Returns the sha for the commit. Single PUT — the audio
+  // sizes don't need resumable multipart.
+  async function inboxUpload(token, blob, onProgress) {
+    const sha = await sha256Hex(blob);
+    const mime = blob.type || 'audio/mp4';
+    const begin = await api('/inbox/' + encodeURIComponent(token) + '/upload', {
+      method: 'POST', body: JSON.stringify({ blobs: [{ sha256: sha, bytes: blob.size, mime }] }),
+    });
+    const up = (begin.uploads || []).find((u) => u.sha256 === sha) || (begin.uploads || [])[0];
+    if (up && up.url) await putWithProgress(up.url, blob, onProgress);
+    else if (onProgress) onProgress(1);              // already present (dedup) — nothing to send
+    return { sha256: sha, mime };
+  }
+
+  // Guest side: record the reading against the invite so it appears in the inbox.
+  async function inboxCommit(token, meta) {
+    return api('/inbox/' + encodeURIComponent(token) + '/commit', {
+      method: 'POST',
+      body: JSON.stringify({
+        blobSha256: meta.blobSha256, mime: meta.mime,
+        fromName: meta.fromName || null, note: meta.note || null, readingMeta: meta.readingMeta || null,
+      }),
+    });                                              // { ok, id }
+  }
+
+  // Presigned PUT with progress. No content-type header — the existing backup
+  // upload PUTs raw too, so the header set isn't part of the R2 signature.
+  function putWithProgress(url, blob, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url);
+      if (xhr.upload && onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error('upload -> ' + xhr.status));
+      xhr.onerror = () => reject(new Error('The upload didn’t go through — check the connection and try again.'));
+      xhr.send(blob);
+    });
+  }
+
+  g.Cloud = {
+    pushBackup, pullBackup, autoBackup, claim, sha256Hex, enumerate, API,
+    pushParcel, pullParcel,
+    createInvite, checkInbox, fetchArrivalBlob, acceptInbox, inboxUpload, inboxCommit,
+  };
 })();

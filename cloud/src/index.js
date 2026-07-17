@@ -36,6 +36,14 @@ function sixDigitCode() {
   const a = new Uint32Array(1); crypto.getRandomValues(a)
   return String(100000 + (a[0] % 900000))
 }
+// url-safe capability token for a share link (>=16 random bytes -> base64url)
+function urlToken(bytes = 18) {
+  const a = new Uint8Array(bytes); crypto.getRandomValues(a)
+  return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+// invite / inbox ids are Postgres uuids; reject garbage BEFORE it hits a uuid cast
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+const isPast = (ts) => ts && new Date(ts) < new Date()
 
 // --- tokens -------------------------------------------------------------
 const mintMagic = (env, email, jti) =>
@@ -159,6 +167,58 @@ export default {
       return json(200, { token: await mintSession(env, accountId, email), email })
     }
 
+    // --- capability-token routes (Phase 3/4): the URL token IS the authority,
+    //     so these are handled BEFORE the session-JWT gate below ---
+
+    // Fetch a shared parcel by its token (no auth). 404 (calm) on unknown/expired.
+    let mShare
+    if ((mShare = path.match(/^\/share\/([^/]+)$/)) && method === 'GET') {
+      const token = decodeURIComponent(mShare[1])
+      const row = (await sql`SELECT family_id, manifest_key, title, to_family_id, expires_at, claimed_at FROM share_link WHERE token = ${token}`)[0]
+      if (!row || isPast(row.expires_at)) return json(404, { error: 'not found' })
+      // server-side read of the envelope we wrote at share time (manifest + declared sha list)
+      let env0
+      try { env0 = await (await fetch(await presign(env, row.manifest_key, 'GET'))).json() }
+      catch (_) { return json(404, { error: 'not found' }) }
+      const manifest = env0 && env0.manifest ? env0.manifest : env0
+      const shas = Array.isArray(env0 && env0.blobSha256) ? env0.blobSha256 : []
+      const blobs = []
+      // presign ONLY this share's family's blobs — never cross-family
+      for (const sha of shas) blobs.push({ sha256: sha, url: await presign(env, blobKey(row.family_id, sha), 'GET') })
+      return json(200, { manifest, blobs, title: row.title, toFamilyId: row.to_family_id })
+    }
+
+    // Guest uploads to an invite ("put it on the shelf"): invite token, NOT a session.
+    let mIup
+    if ((mIup = path.match(/^\/inbox\/([^/]+)\/upload$/)) && method === 'POST') {
+      const inviteToken = decodeURIComponent(mIup[1])
+      if (!isUuid(inviteToken)) return json(404, { error: 'not found' })
+      const inv = (await sql`SELECT id, family_id, expires_at, revoked_at FROM invite WHERE id = ${inviteToken}`)[0]
+      if (!inv || inv.revoked_at || isPast(inv.expires_at)) return json(404, { error: 'not found' })
+      const body = await request.json().catch(() => ({}))
+      const blobs = Array.isArray(body.blobs) ? body.blobs : []
+      const uploads = []
+      // blobs land content-addressed in THIS invite's family space; the guest can write nowhere else
+      for (const b of blobs) { if (!b.sha256) continue; uploads.push({ sha256: b.sha256, url: await presign(env, blobKey(inv.family_id, b.sha256), 'PUT') }) }
+      return json(200, { uploads })
+    }
+
+    // Guest commits an inbox_item after the bytes are up (invite token, NOT a session).
+    let mIcm
+    if ((mIcm = path.match(/^\/inbox\/([^/]+)\/commit$/)) && method === 'POST') {
+      const inviteToken = decodeURIComponent(mIcm[1])
+      if (!isUuid(inviteToken)) return json(404, { error: 'not found' })
+      const inv = (await sql`SELECT id, family_id, expires_at, revoked_at FROM invite WHERE id = ${inviteToken}`)[0]
+      if (!inv || inv.revoked_at || isPast(inv.expires_at)) return json(404, { error: 'not found' })
+      const body = await request.json().catch(() => ({}))
+      const shas = Array.isArray(body.blobSha256) ? body.blobSha256.filter(Boolean) : []
+      const sha = shas[0] || null
+      if (!sha) return json(400, { error: 'blobSha256 required' })
+      const rows = await sql`INSERT INTO inbox_item (family_id, invite_id, blob_sha256, mime, from_name, note)
+                             VALUES (${inv.family_id}, ${inv.id}, ${sha}, ${body.mime || null}, ${body.fromName || null}, ${body.note || null}) RETURNING id`
+      return json(200, { ok: true, id: rows[0].id })
+    }
+
     // --- everything below needs a session ---
     const a = await auth(request, env)
     if (a.err) return a.err
@@ -227,6 +287,56 @@ export default {
       const row = (await sql`SELECT manifest_key, manifest_sha256, pushed_at FROM backup_state WHERE family_id = ${fam}`)[0]
       if (!row) return json(404, { error: 'no backup for family' })
       return json(200, { manifest_key: row.manifest_key, manifest_sha256: row.manifest_sha256, pushed_at: row.pushed_at, url: await presign(env, row.manifest_key, 'GET') })
+    }
+
+    // --- Phase 3: mint a share link (JWT + family) ---
+    if (path === '/share' && method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const manifest = body.manifest || {}
+      const blobSha256 = Array.isArray(body.blobSha256) ? body.blobSha256.filter(Boolean) : []
+      const token = urlToken()
+      const manifestKey = `shares/${token}.json`
+      // store manifest + declared sha list together so GET /share presigns exactly these blobs
+      const envelope = JSON.stringify({ manifest, blobSha256, title: body.title || null, toFamilyId: body.toFamilyId || null })
+      const put = await fetch(await presign(env, manifestKey, 'PUT'), { method: 'PUT', body: envelope, headers: { 'content-type': 'application/json' } })
+      if (!put.ok) return json(502, { error: 'could not store the share' })
+      await sql`INSERT INTO share_link (token, family_id, kind, manifest_key, title, to_family_id, expires_at)
+                VALUES (${token}, ${fam}, 'parcel', ${manifestKey}, ${body.title || null}, ${body.toFamilyId || null}, now() + interval '30 days')`
+      return json(200, { token, url: env.APP_URL.replace(/\/+$/, '') + '/#parcel=' + token })
+    }
+
+    // --- Phase 4: mint an upload invite (JWT + family) ---
+    if (path === '/invite' && method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const days = Number.isFinite(body.expiresDays) ? body.expiresDays : 30
+      const rows = await sql`INSERT INTO invite (family_id, kid_name, book_title, expires_at)
+                             VALUES (${fam}, ${body.kidName || null}, ${body.bookTitle || null}, now() + make_interval(days => ${days})) RETURNING id`
+      const id = rows[0].id
+      return json(200, { inviteToken: id, url: env.APP_URL.replace(/\/+$/, '') + '/#give=' + id })
+    }
+
+    // --- Phase 4: list open arrivals for the caller's family (JWT + family) ---
+    if (path === '/inbox' && method === 'GET') {
+      const rows = await sql`SELECT id, from_name, note, blob_sha256, mime, created_at
+                             FROM inbox_item WHERE family_id = ${fam} AND accepted_at IS NULL ORDER BY created_at`
+      const items = []
+      for (const r of rows) items.push({ id: r.id, fromName: r.from_name, note: r.note, blobSha256: r.blob_sha256, mime: r.mime, createdAt: r.created_at, blobUrl: await presign(env, blobKey(fam, r.blob_sha256), 'GET') })
+      return json(200, { items })
+    }
+
+    // --- Phase 4: accept an arrival (JWT + family ownership check) ---
+    let mAcc
+    if ((mAcc = path.match(/^\/inbox\/([^/]+)\/accept$/)) && method === 'POST') {
+      const id = decodeURIComponent(mAcc[1])
+      if (!isUuid(id)) return json(404, { error: 'not found' })
+      const upd = await sql`UPDATE inbox_item SET accepted_at = now() WHERE id = ${id} AND family_id = ${fam} AND accepted_at IS NULL RETURNING id`
+      if (!upd.length) {
+        // adversarial: another family's item must be refused, not silently no-op'd
+        const it = (await sql`SELECT family_id FROM inbox_item WHERE id = ${id}`)[0]
+        if (it && it.family_id !== fam) return json(403, { error: 'not your item' })
+        return json(404, { error: 'not found' })
+      }
+      return json(200, { ok: true })
     }
 
     return json(404, { error: 'unknown route' })
