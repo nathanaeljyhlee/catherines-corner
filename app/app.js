@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.12.2';
+  const APP_VERSION = '1.13.1';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -148,7 +148,7 @@
       '<p class="screen-sub" style="margin-bottom:14px">Catherine’s Corner is in <b>alpha</b> — you’re testing it early, and the honest state of things is:</p>' +
       '<div class="stack">' +
       '<div class="rowitem"><span style="font-size:19px">📍</span><div class="grow"><div class="t">Recordings live only on this device</div>' +
-      '<div class="d">In this browser, on this phone or tablet. Your recordings are never uploaded anywhere.</div></div></div>' +
+      '<div class="d">In this browser, on this phone or tablet. Your recordings aren’t uploaded anywhere unless you turn on cloud backup (under Keep it safe).</div></div></div>' +
       (window.Telemetry && Telemetry.configured()
         ? '<div class="rowitem"><span style="font-size:19px">📊</span><div class="grow"><div class="t">Anonymous usage counts help fix rough spots</div>' +
           '<div class="d">Simple counts of what gets used — never recordings, names, or titles — reach the maker. Turn it off any time: for grown-ups → What gets used.</div></div></div>'
@@ -203,7 +203,18 @@
   }
 
   // ---------- boot ----------
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
+    // A magic sign-in link (#magic=…) is handled FIRST and awaited, so the
+    // session is set before the app paints (the cloud card shows signed-in and
+    // there's no render race). CloudAuth.init also loads any stored session.
+    let magicMsg = null;
+    if (window.CloudAuth) {
+      try {
+        const res = await CloudAuth.init();
+        if (res && res.email) magicMsg = 'Signed in as ' + res.email + '. Cloud backup is under “for grown-ups → Keep it safe.”';
+        else if (res && res.error) magicMsg = res.error;
+      } catch (e) { /* offline / cloud unreachable — the app still opens */ }
+    }
     initUpdates();
     // An invite link opens the guest page directly — no PIN, no shelf, no setup.
     const invite = Send.inviteFromHash();
@@ -213,7 +224,9 @@
       render();
       return;
     }
-    checkSharedInbox().finally(render);
+    await checkSharedInbox();
+    render();
+    if (magicMsg) toast(magicMsg);
     // Devices already holding readings should be marked must-keep even if
     // they saved before persistence was requested (or the browser said no
     // once) — re-ask quietly whenever there is something worth keeping.
