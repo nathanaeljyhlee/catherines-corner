@@ -54,6 +54,55 @@
     }
   }
 
+  // ---------- co-parent join requests (owner side) ----------
+  // A grown-up who redeemed a #join= link waits as a pending member until the
+  // owner approves. Polled quietly on the grown-up home — same posture as
+  // arrivals: only when signed in AND online, throttled, every failure silent
+  // (a non-owner account simply gets nothing back). Approving flips them active
+  // and the existing family-scoped backup/inbox/share "just works" for them.
+  let _joinReqs = { at: 0, items: [] };
+  async function loadJoinRequests(force) {
+    if (!(window.Cloud && window.CloudAuth && CloudAuth.isSignedIn())) return [];
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return _joinReqs.items;
+    if (!force && Date.now() - _joinReqs.at < 3 * 60 * 1000) return _joinReqs.items;
+    try {
+      const { requests } = await Cloud.familyRequests();
+      _joinReqs = { at: Date.now(), items: requests || [] };
+    } catch (e) { /* quiet — not the owner, offline, or transient */ }
+    return _joinReqs.items;
+  }
+  function renderJoinRequests(box, items, cornerName) {
+    box.innerHTML = '';
+    for (const req of (items || [])) {
+      const card = el(
+        '<div class="home-card" style="border-color:var(--warm); background:var(--highlight); cursor:default">' +
+        '<span class="ic">🔔</span><span class="t">' + esc(req.email) + ' wants to join ' + esc(cornerName || 'the') + '’s family</span>' +
+        '<span class="d">Approve to share this shelf with them on their own device. You stay the owner.</span>' +
+        '<div class="btn-row" style="margin-top:10px"><button class="btn primary" data-ok>Approve</button>' +
+        '<button class="btn ghost" data-no>Not now</button></div></div>');
+      card.querySelector('[data-ok]').onclick = async () => {
+        const b = card.querySelector('[data-ok]'); b.disabled = true; b.textContent = 'Approving…';
+        try {
+          await Cloud.approveMember(req.accountId);
+          _joinReqs.items = _joinReqs.items.filter((x) => x.accountId !== req.accountId);
+          DB.metrics.bump('coparent.approved');
+          toast(req.email + ' can now see the shelf on their device.');
+          render();
+        } catch (e) { b.disabled = false; b.textContent = 'Approve'; toast('Couldn’t approve just now — try again in a moment.'); }
+      };
+      card.querySelector('[data-no]').onclick = async () => {
+        const b = card.querySelector('[data-no]'); b.disabled = true;
+        try {
+          await Cloud.declineMember(req.accountId);
+          _joinReqs.items = _joinReqs.items.filter((x) => x.accountId !== req.accountId);
+          DB.metrics.bump('coparent.declined');
+          render();
+        } catch (e) { b.disabled = false; toast('Couldn’t update that just now — try again in a moment.'); }
+      };
+      box.appendChild(card);
+    }
+  }
+
   // =========================================================
   // PIN GATE (lazy — set on first exit from kid mode)
   // =========================================================
@@ -218,6 +267,11 @@
     const arrivalsBox = el('<div></div>');
     root.appendChild(arrivalsBox);
     loadArrivals(false).then((items) => renderArrivals(arrivalsBox, items)).catch(() => {});
+
+    // 🔔 Co-parents waiting to be let in (owner only; quiet for everyone else).
+    const joinReqBox = el('<div></div>');
+    root.appendChild(joinReqBox);
+    loadJoinRequests(false).then((items) => renderJoinRequests(joinReqBox, items, ctx.cornerName)).catch(() => {});
 
     // First-boot import nudge: an existing user (has recordings, not signed in)
     // gets a one-time prompt to fold their pre-cloud library into cloud backup.
@@ -502,6 +556,63 @@
           else { a.textContent = '🎁 Check for recordings sent to the shelf'; toast('No new recordings waiting just now.'); }
         };
       }
+
+      // ---- Add a co-parent (owner shares the shelf with another grown-up) ----
+      if (CloudAuth.isSignedIn()) {
+        const coCard = el(
+          '<div class="card" style="margin-top:14px"><div class="kicker">add a co-parent</div>' +
+          '<p class="hint" style="margin-top:8px">Share this corner with another grown-up — a partner, a co-parent. They sign in with their own email and ask to join; you approve them from the grown-up home, and then the same shelf appears on their device too. You stay the owner.</p>' +
+          '<div class="btn-row"><button class="btn" id="addco">👪 Invite a co-parent</button></div></div>');
+        root.appendChild(coCard);
+        coCard.querySelector('#addco').onclick = async () => {
+          const b = coCard.querySelector('#addco'); b.disabled = true; b.textContent = '👪 making a link…';
+          try {
+            const { url } = await Cloud.createFamilyInvite();
+            DB.metrics.bump('coparent.invite_created');
+            await Send.shareText(url);
+          } catch (e) {
+            toast(/only the owner/i.test(e.message || '') ? 'Only the owner of this corner can add a co-parent.' : 'Couldn’t make a co-parent link just now — try again in a moment.');
+          }
+          b.disabled = false; b.textContent = '👪 Invite a co-parent';
+        };
+
+        // ---- Links you've shared (revocation) ----
+        // Renders only when there's something live to show; stays silent when
+        // offline or on any hiccup (the card removes itself).
+        const linksCard = el(
+          '<div class="card" style="margin-top:14px"><div class="kicker">links you’ve shared</div>' +
+          '<div id="shareslist"><p class="hint" style="margin-top:8px">Checking…</p></div></div>');
+        root.appendChild(linksCard);
+        const listBox = linksCard.querySelector('#shareslist');
+        Cloud.listShares().then(({ shares }) => {
+          if (!shares || !shares.length) { linksCard.remove(); return; }
+          listBox.innerHTML = '<p class="hint" style="margin:8px 0">These 📦 parcel links are live — anyone with one can open what you shared. Cancel any you no longer want reachable; the reading itself stays on the shelf.</p>';
+          const stack = el('<div class="stack"></div>');
+          for (const s of shares) {
+            const row = el(
+              '<div class="rowitem"><span class="av" style="background:var(--accent)">🔗</span>' +
+              '<div class="grow"><div class="t">' + esc(s.title || 'A reading') + '</div>' +
+              '<div class="d">expires ' + new Date(s.expiresAt).toLocaleDateString() + '</div></div>' +
+              '<button class="btn danger" data-x>Cancel this link</button></div>');
+            row.querySelector('[data-x]').onclick = async () => {
+              if (!confirm('Cancel this link? Anyone who still has it will get a calm “not found.” Nothing on your shelf changes.')) return;
+              const xb = row.querySelector('[data-x]'); xb.disabled = true; xb.textContent = 'Cancelling…';
+              try {
+                await Cloud.revokeShare(s.token);
+                DB.metrics.bump('share.link_revoked');
+                row.remove();
+                if (!stack.querySelector('.rowitem')) linksCard.remove();
+                toast('That link is cancelled.');
+              } catch (e) {
+                xb.disabled = false; xb.textContent = 'Cancel this link';
+                toast(/40[34]|not your/i.test(e.message || '') ? 'That link is already gone.' : 'Couldn’t cancel it just now — try again in a moment.');
+              }
+            };
+            stack.appendChild(row);
+          }
+          listBox.appendChild(stack);
+        }).catch(() => { linksCard.remove(); });   // quiet when offline / not signed in
+      }
     }
 
     const scard = el(
@@ -554,6 +665,113 @@
       '<p class="hint" style="margin-top:14px">New phone, or lending it to family? <a href="check.html">Run the 30-second device check</a> to make sure recording and storage behave there.</p>'));
 
     root.appendChild(backLink('‹ grown-up home', () => go('home')));
+  });
+
+  // =========================================================
+  // JOIN — a co-parent redeems a #join= link (sign in → pending → adopt)
+  // =========================================================
+  // Opened by boot when the URL carries #join=<token>. Auto-claim is already
+  // suppressed (boot set it) so nothing here claims this device's own corner
+  // while the co-parent waits. Signed out → sign in first; then redeem. Pending
+  // shows the calm "waiting for approval"; active adopts the owner's shelf.
+  register('join', async function joinScreen(root) {
+    const token = S.params.joinToken;
+    DB.metrics.bump('coparent.join_opened');
+    root.appendChild(el(
+      '<div class="kicker">joining a family</div>' +
+      '<h1 class="screen-title">Join your family’s corner</h1>' +
+      '<p class="screen-sub">Someone shared their child’s corner with you. Sign in with your own email to ask to join — the family owner approves it, and then their shelf appears here too. Nothing on this device is claimed or changed while you wait.</p>'));
+    const stage = el('<div></div>');
+    root.appendChild(stage);
+
+    function pending() {
+      stage.innerHTML = '';
+      const card = el(
+        '<div class="card" style="text-align:center"><div style="font-size:40px">⏳</div>' +
+        '<h2 class="serif" style="font-size:22px; margin-top:6px">Request sent — waiting for the family owner to approve.</h2>' +
+        '<p class="hint" style="margin-top:8px">You’ll see their shelf here once they say yes. You can close this and come back any time — reopening checks again.</p>' +
+        '<div class="btn-row" style="justify-content:center"><button class="btn" id="recheck">Check again</button></div></div>');
+      stage.appendChild(card);
+      card.querySelector('#recheck').onclick = () => attemptJoin();
+    }
+    function alreadyHave() {
+      stage.innerHTML = '';
+      const card = el(
+        '<div class="card"><div class="kicker">you already have a corner</div>' +
+        '<p class="hint" style="margin-top:8px">This email already runs its own corner, so it can’t also join another as a co-parent — co-parent joining is for an account without its own corner yet. If you want to bring two families together, reach out to whoever sent this link.</p>' +
+        '<div class="btn-row"><button class="btn primary" id="go">Go to my corner</button></div></div>');
+      stage.appendChild(card);
+      card.querySelector('#go').onclick = () => { Cloud.setSuppressAutoClaim(false); S.mode = 'kid'; go('shelf'); };
+    }
+    async function adopted() {
+      stage.innerHTML = '';
+      Cloud.setSuppressAutoClaim(false);   // active now — normal sync resumes
+      const card = el(
+        '<div class="card" style="text-align:center"><div style="font-size:40px">✓</div>' +
+        '<h2 class="serif" style="font-size:22px; margin-top:6px">You’re in.</h2>' +
+        '<p class="hint" id="admsg" style="margin-top:8px">Bringing the family’s shelf onto this device…</p></div>');
+      stage.appendChild(card);
+      DB.metrics.bump('coparent.joined_active');
+      try { await Cloud.pullBackup(); clearURLCache(); } catch (e) { /* offline / nothing there yet — the shelf still opens */ }
+      card.querySelector('#admsg').textContent = 'The shelf is ready.';
+      const row = el('<div class="btn-row" style="justify-content:center; margin-top:10px"><button class="btn primary" id="see">See the shelf</button></div>');
+      card.appendChild(row);
+      row.querySelector('#see').onclick = () => { S.mode = 'kid'; go('shelf'); };
+    }
+    async function attemptJoin() {
+      stage.innerHTML = '';
+      stage.appendChild(el('<p class="hint">Sending your request…</p>'));
+      try {
+        const res = await Cloud.joinFamily(token);
+        if (res && res.status === 'active') return adopted();
+        return pending();
+      } catch (e) {
+        if (/\b409\b|already have a corner/i.test(e.message || '')) return alreadyHave();
+        stage.innerHTML = '';
+        const err = el('<div class="card"><p class="hint">That didn’t go through just now — you may be offline, or the link may have expired. <a href="#" id="retry">Try again</a></p></div>');
+        err.querySelector('#retry').onclick = (ev) => { ev.preventDefault(); attemptJoin(); };
+        stage.appendChild(err);
+      }
+    }
+    function signInForm() {
+      stage.innerHTML = '';
+      const card = el(
+        '<div class="card"><div class="kicker">first, sign in</div>' +
+        '<p class="hint" style="margin-top:8px">Use your own email — this is your cloud account.</p>' +
+        '<div class="btn-row" style="gap:8px;flex-wrap:wrap;margin-top:8px"><input type="email" id="jemail" placeholder="your email" autocomplete="email" inputmode="email" style="flex:1;min-width:170px;padding:10px;border:1px solid #d8cdbb;border-radius:10px;font:inherit"><button class="btn primary" id="jsend">✉️ Email me a code</button></div></div>');
+      stage.appendChild(card);
+      card.querySelector('#jsend').onclick = async () => {
+        const email = card.querySelector('#jemail').value.trim();
+        if (!email) return toast('Enter your email first.');
+        const b = card.querySelector('#jsend'); b.disabled = true; b.textContent = 'Sending…';
+        try { await CloudAuth.signIn(email); codeForm(email); }
+        catch (e) { toast(e.message); b.disabled = false; b.textContent = '✉️ Email me a code'; }
+      };
+    }
+    function codeForm(email) {
+      stage.innerHTML = '';
+      const card = el(
+        '<div class="card"><div class="kicker">check your email</div>' +
+        '<p class="hint" style="margin-top:8px">📧 We emailed a 6-digit code to <b>' + esc(email) + '</b>. Type it here to finish signing in.</p>' +
+        '<div class="btn-row" style="gap:8px;flex-wrap:wrap"><input type="text" id="jcode" placeholder="6-digit code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" style="flex:1;min-width:130px;padding:10px;border:1px solid #d8cdbb;border-radius:10px;font:inherit;letter-spacing:3px"><button class="btn primary" id="jverify">Sign in</button></div>' +
+        '<p class="hint" style="margin-top:8px"><a href="#" id="jresend">Send a new code</a></p></div>');
+      stage.appendChild(card);
+      card.querySelector('#jverify').onclick = async () => {
+        const code = card.querySelector('#jcode').value.trim();
+        if (!code) return toast('Enter the code from your email.');
+        const b = card.querySelector('#jverify'); b.disabled = true; b.textContent = 'Signing in…';
+        try { await CloudAuth.verifyCode(email, code); attemptJoin(); }
+        catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Sign in'; }
+      };
+      card.querySelector('#jresend').onclick = async (e) => { e.preventDefault(); try { await CloudAuth.signIn(email); toast('A new code is on its way.'); } catch (err) { toast(err.message); } };
+    }
+
+    if (!(window.Cloud && window.CloudAuth)) {
+      stage.appendChild(el('<div class="card"><p class="hint">Joining a family needs the cloud, which isn’t available here. Try opening this link in your browser.</p></div>'));
+      return;
+    }
+    if (CloudAuth.isSignedIn()) attemptJoin();
+    else signInForm();
   });
 
   // =========================================================
@@ -797,9 +1015,10 @@
   // Counts only, kept on this device; they leave only when a grown-up
   // taps share — that snapshot is how alpha pain points reach the maker.
   // =========================================================
-  const AREA_ORDER = ['record', 'invite', 'guest', 'share', 'sync', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
+  const AREA_ORDER = ['record', 'invite', 'guest', 'give', 'share', 'coparent', 'sync', 'play', 'library', 'corners', 'safety', 'help', 'gate', 'error'];
   const AREA_LABELS = {
-    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', share: '📦 parcels', sync: '🔁 nearby sync', play: '📖 listening',
+    record: '🎙 recording', invite: '💌 inviting', guest: '🌍 invited guests', give: '🎁 shelf recordings', share: '📦 parcels', coparent: '👪 co-parents',
+    sync: '🔁 nearby sync', play: '📖 listening',
     library: '📚 the library', corners: '👧 corners', safety: '🗄 keep it safe', help: '❓ help',
     gate: '🔢 the grown-up code', error: '⚠️ rough edges',
   };

@@ -14,6 +14,22 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.15', slides: [
+        {
+          art: '👩‍👧 <span class="arrows">+</span> 👨',
+          sub: 'a second grown-up, with your say-so',
+          title: 'Invite a co-parent to the corner',
+          text: 'Under Keep it safe, “Add a co-parent” makes a link for another grown-up. They open it and sign in, and once you tap Approve they see the same shelf and can record and tuck in readings too. A link on its own never lets anyone in, it always waits for your yes.',
+        },
+        {
+          art: '🔗 <span class="arrows">→</span> 🚫',
+          sub: 'and long recordings ride out a wifi hiccup',
+          title: 'Cancel a shared link any time',
+          text: 'Keep it safe now lists the links you’ve shared, each with “Cancel this link,” so a link can stop working whenever you like. And a long reading sent in from an invite now keeps going if the connection drops for a moment, instead of starting over.',
+        },
+      ],
+    },
+    {
       v: '1.14', slides: [
         {
           art: '📦 <span class="arrows">→</span> 🔗 <span class="arrows">→</span> 🏠',

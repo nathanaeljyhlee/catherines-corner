@@ -1,4 +1,4 @@
-/* Catherine's Corner E2E — fake cloud server (Stage 2, Phase 3 + Phase 4).
+/* Catherine's Corner E2E — fake cloud server (Stage 2, Phase 3 + Phase 4 + v1.15).
    Keyless, in-memory, offline — the same shape as the existing fake
    telemetry collector in e2e.js (a tiny http.createServer standing in for a
    real vendor), just enough surface to drive the client through
@@ -16,6 +16,20 @@
      POST /inbox/{token}/upload   POST /inbox/{token}/commit   (invite-token auth)
      GET /inbox              POST /inbox/{id}/accept            (session auth)
 
+   v1.15 additions (snowbear-hq/sprints/2026-07-17/1406/CONTRACT.md):
+     GET  /shares                        POST /share/{token}/revoke
+     POST /inbox/{token}/upload/init     POST /inbox/{token}/upload/complete
+     POST /inbox/{token}/upload/abort    (invite-token auth, in-memory multipart)
+     POST /family/invite                 POST /family/join
+     GET  /family/requests               POST /family/members/{accountId}/approve
+     POST /family/members/{accountId}/decline
+   PLUS the cross-cutting invariant: every family-scoped route requires an
+   ACTIVE family_member row. A `pending` co-parent must see NOTHING — no
+   /inbox items, no /backup/latest, no /shares, nothing scoped to the family
+   — until an owner approves them. `familyOf` (one row per account) from
+   v1.14 is replaced with `familyMembers` (keyed by family+account, carrying
+   a status) so pending vs. active is representable at all.
+
    Plus a handful of `/__test/*` routes that exist ONLY for this harness —
    never called by production code:
      GET  /__test/lastcode?email=      — the real worker echoes the emailed
@@ -28,12 +42,18 @@
                                           so the calm-404 / expired-upload
                                           paths are actually reachable in a
                                           fresh in-memory server.
+     POST /__test/fail-part-once {uploadId, partNumber}
+                                        — make the NEXT PUT to that multipart
+                                          part fail with 500 (one-shot), so a
+                                          dropped-part-then-retry can be
+                                          reproduced deterministically.
      POST /__test/reset                — wipe all state between spec files.
 
-   "Presigned" URLs are plain URLs back to this same server's /__blob/ route
-   (`PUT` stores bytes, `GET` returns them) — nothing here is signed because
-   nothing here is real; the capability is "know the URL", same as the real
-   worker's short-TTL presign, just without the TTL or the AWS SigV4 math. */
+   "Presigned" URLs are plain URLs back to this same server's /__blob/ (whole
+   object) or /__mpu/ (multipart part) routes (`PUT` stores bytes, `GET`
+   returns them) — nothing here is signed because nothing here is real; the
+   capability is "know the URL", same as the real worker's short-TTL presign,
+   just without the TTL or the AWS SigV4 math. */
 'use strict';
 const http = require('http');
 const crypto = require('crypto');
@@ -68,14 +88,20 @@ function createFakeCloud({ port, appOrigin }) {
   const accountsByEmail = new Map();   // email -> accountId
   const sessions = new Map();          // token -> { accountId, email }
   const authCodes = new Map();         // email -> { code, expiresAt, attempts }
-  const familyOf = new Map();          // accountId -> familyId  (family_member, simplified to one row/account)
+  // family_member, one row per (familyId, accountId), carrying a status —
+  // this is what makes "pending" representable (v1.14's familyOf could only
+  // ever hold one active-looking row per account).
+  const familyMembers = new Map();     // `${familyId}:${accountId}` -> { familyId, accountId, role, status, createdAt }
   const families = new Map();          // familyId -> { ownerAccountId, createdAt }
+  const familyInvites = new Map();     // token -> { familyId, createdBy, createdAt, expiresAt, usedAt }
   const objects = new Map();           // R2 stand-in: key -> { bytes: Buffer, mime }
   const blobMeta = new Map();          // `${family}:${sha256}` -> { bytes, mime }  (blob_object)
   const backupState = new Map();       // familyId -> { manifestKey, manifestSha256, deviceLabel, pushedAt }
   const shareLinks = new Map();        // token -> { familyId, kind, manifestKey, title, toFamilyId, blobSha256[], createdAt, expiresAt, revokedAt }
   const invites = new Map();           // id -> { familyId, kidName, bookTitle, createdAt, expiresAt, revokedAt }
   const inboxItems = new Map();        // id -> { familyId, inviteId, blobSha256, mime, fromName, note, createdAt, acceptedAt }
+  const multipartUploads = new Map();  // uploadId -> { familyId, key, sha256, mime, expectedParts, parts: Map<partNumber,{bytes,etag}>, createdAt }
+  const failOnce = new Set();          // `${uploadId}:${partNumber}` — one-shot part-PUT failure injection
 
   const base = () => `http://localhost:${port}`;
   const blobKey = (fam, sha) => `corners/${fam}/${sha}`;
@@ -84,6 +110,10 @@ function createFakeCloud({ port, appOrigin }) {
   function ensureAccount(email) {
     if (!accountsByEmail.has(email)) accountsByEmail.set(email, crypto.randomUUID());
     return accountsByEmail.get(email);
+  }
+  function emailOf(accountId) {
+    for (const [email, id] of accountsByEmail.entries()) if (id === accountId) return email;
+    return null;
   }
   function mintSession(accountId, email) {
     const t = randToken(24);
@@ -99,12 +129,55 @@ function createFakeCloud({ port, appOrigin }) {
     return s;
   }
 
-  const NEEDS_SESSION = new Set(['/family/claim', '/family/mine', '/backup/begin', '/backup/commit', '/backup/latest', '/share', '/invite', '/inbox']);
+  // ---- membership helpers (the active-only gate lives here) ----
+  const memberKey = (familyId, accountId) => `${familyId}:${accountId}`;
+  // resolveFamily(sql, a) equivalent: ACTIVE membership only. A pending row
+  // is invisible to every family-scoped route that calls this.
+  function activeFamilyOf(accountId) {
+    let best = null;
+    for (const m of familyMembers.values()) {
+      if (m.accountId === accountId && m.status === 'active' && (!best || m.createdAt < best.createdAt)) best = m;
+    }
+    return best ? best.familyId : null;
+  }
+  function pendingFamilyOf(accountId) {
+    let best = null;
+    for (const m of familyMembers.values()) {
+      if (m.accountId === accountId && m.status === 'pending' && (!best || m.createdAt < best.createdAt)) best = m;
+    }
+    return best ? best.familyId : null;
+  }
+  function ownerFamilyOf(accountId) {
+    for (const [fid, f] of families.entries()) if (f.ownerAccountId === accountId) return fid;
+    return null;
+  }
+
+  const NEEDS_SESSION = new Set([
+    '/family/claim', '/family/mine', '/family/invite', '/family/join', '/family/requests',
+    '/backup/begin', '/backup/commit', '/backup/latest',
+    '/share', '/shares', '/invite', '/inbox',
+  ]);
+  const DYNAMIC_SESSION_ROUTES = [
+    /^\/inbox\/[^/]+\/accept$/,
+    /^\/share\/[^/]+\/revoke$/,
+    /^\/family\/members\/[^/]+\/(approve|decline)$/,
+  ];
+  function isSessionRoute(p) {
+    return NEEDS_SESSION.has(p) || DYNAMIC_SESSION_ROUTES.some((re) => re.test(p));
+  }
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
-    res.setHeader('access-control-allow-methods', 'GET,POST,PUT,OPTIONS');
+    res.setHeader('access-control-allow-methods', 'GET,POST,PUT,DELETE,OPTIONS');
     res.setHeader('access-control-allow-headers', 'authorization,content-type');
+    // Real multipart uploads need the browser to be able to READ the ETag
+    // response header off the PUT (that's how the client captures it for
+    // /upload/complete) — S3/R2 requires ExposeHeaders:["ETag"] in bucket
+    // CORS for this to work from a browser. Flagging this here because it's
+    // a genuinely easy-to-miss cross-cutting requirement for the REAL R2
+    // bucket config (not e2e's to fix, but e2e is where it'll silently bite
+    // if missed — see report).
+    res.setHeader('access-control-expose-headers', 'etag');
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
     let u;
@@ -127,6 +200,30 @@ function createFakeCloud({ port, appOrigin }) {
         }
       }
 
+      // ---- multipart part stand-in: PUT stores ONE part, keyed by
+      //      (uploadId, partNumber), separate from the assembled object so a
+      //      dropped/re-PUT part can't corrupt bytes already accepted for
+      //      other parts. Real S3/R2 semantics: last PUT to a given part
+      //      number wins, and PutPart returns an ETag the client must carry
+      //      into CompleteMultipartUpload. ----
+      if (p.startsWith('/__mpu/')) {
+        const segs = p.split('/'); // ['', '__mpu', uploadId, partNumber]
+        const uploadId = segs[2], partNumber = Number(segs[3]);
+        if (method === 'PUT') {
+          const failKey = `${uploadId}:${partNumber}`;
+          if (failOnce.has(failKey)) {
+            failOnce.delete(failKey); // one-shot
+            res.writeHead(500); return res.end('simulated dropped part');
+          }
+          const mpu = multipartUploads.get(uploadId);
+          if (!mpu) { res.writeHead(404); return res.end(); }
+          const bytes = await readBody(req);
+          const etag = '"' + crypto.createHash('md5').update(bytes).digest('hex') + '"';
+          mpu.parts.set(partNumber, { bytes, etag });
+          res.writeHead(200, { etag }); return res.end();
+        }
+      }
+
       // ---- test-only seams (never called by app code) ----
       if (p === '/__test/lastcode' && method === 'GET') {
         const c = authCodes.get(normEmail(u.searchParams.get('email')));
@@ -144,8 +241,15 @@ function createFakeCloud({ port, appOrigin }) {
         if (inv) inv.expiresAt = Date.now() - 1000;
         return json(res, 200, { ok: true, found: !!inv });
       }
+      if (p === '/__test/fail-part-once' && method === 'POST') {
+        const { uploadId, partNumber } = await readJson(req);
+        failOnce.add(`${uploadId}:${partNumber}`);
+        return json(res, 200, { ok: true });
+      }
       if (p === '/__test/reset' && method === 'POST') {
-        [accountsByEmail, sessions, authCodes, familyOf, families, objects, blobMeta, backupState, shareLinks, invites, inboxItems].forEach(m => m.clear());
+        [accountsByEmail, sessions, authCodes, familyMembers, families, familyInvites,
+          objects, blobMeta, backupState, shareLinks, invites, inboxItems,
+          multipartUploads, failOnce].forEach(m => m.clear());
         return json(res, 200, { ok: true });
       }
 
@@ -184,7 +288,7 @@ function createFakeCloud({ port, appOrigin }) {
       }
 
       // ---- session-gated routes ----
-      if (NEEDS_SESSION.has(p) || /^\/inbox\/[^/]+\/accept$/.test(p)) {
+      if (isSessionRoute(p)) {
         const a = authenticate(req);
         if (a.err) return json(res, a.err[0], a.err[1]);
 
@@ -194,17 +298,66 @@ function createFakeCloud({ port, appOrigin }) {
           if (!fam) return json(res, 400, { error: 'familyId required' });
           if (!families.has(fam)) {
             families.set(fam, { ownerAccountId: a.accountId, createdAt: Date.now() });
-            familyOf.set(a.accountId, fam);
+            familyMembers.set(memberKey(fam, a.accountId), { familyId: fam, accountId: a.accountId, role: 'owner', status: 'active', createdAt: Date.now() });
             return json(res, 200, { claimed: fam, role: 'owner' });
           }
-          if (familyOf.get(a.accountId) === fam) return json(res, 200, { claimed: fam, role: 'owner' });
+          if (activeFamilyOf(a.accountId) === fam) {
+            const m = familyMembers.get(memberKey(fam, a.accountId));
+            return json(res, 200, { claimed: fam, role: m ? m.role : 'owner' });
+          }
           return json(res, 403, { error: 'this Corner is already claimed by another account' });
         }
         if (p === '/family/mine' && method === 'GET') {
-          return json(res, 200, { familyId: familyOf.get(a.accountId) || null });
+          return json(res, 200, { familyId: activeFamilyOf(a.accountId), pendingFamilyId: pendingFamilyOf(a.accountId) });
         }
 
-        const fam = familyOf.get(a.accountId) || null;
+        // ---- v1.15 Feature 3: co-parent invite / join / requests / approve / decline ----
+        if (p === '/family/invite' && method === 'POST') {
+          const fid = ownerFamilyOf(a.accountId);
+          if (!fid) return json(res, 403, { error: 'only the owner can invite' });
+          const token = randToken(16);
+          familyInvites.set(token, { familyId: fid, createdBy: a.accountId, createdAt: Date.now(), expiresAt: Date.now() + 14 * 86400000, usedAt: null });
+          return json(res, 200, { joinToken: token, url: `${APP_URL}#join=${token}` });
+        }
+        if (p === '/family/join' && method === 'POST') {
+          const { token } = await readJson(req);
+          const inv = familyInvites.get(token);
+          if (!inv) return json(res, 404, { error: 'not found' });
+          if (inv.usedAt) return json(res, 410, { error: 'this invite has already been used' });
+          if (inv.expiresAt < Date.now()) return json(res, 410, { error: 'this invite has expired' });
+          const already = activeFamilyOf(a.accountId);
+          if (already) return json(res, 409, { error: 'you already have a corner', hint: 'co-parent join is for an account without its own corner' });
+          const key = memberKey(inv.familyId, a.accountId);
+          if (!familyMembers.has(key)) {
+            familyMembers.set(key, { familyId: inv.familyId, accountId: a.accountId, role: 'member', status: 'pending', createdAt: Date.now() });
+          } // else idempotent: leave existing status untouched (ON CONFLICT DO UPDATE SET status = family_member.status)
+          inv.usedAt = Date.now();
+          const m = familyMembers.get(key);
+          return json(res, 200, { status: m.status, familyId: inv.familyId });
+        }
+        if (p === '/family/requests' && method === 'GET') {
+          const fid = ownerFamilyOf(a.accountId);
+          if (!fid) return json(res, 403, { error: 'only the owner can view requests' });
+          const requests = [...familyMembers.values()]
+            .filter((m) => m.familyId === fid && m.status === 'pending')
+            .sort((x, y) => x.createdAt - y.createdAt)
+            .map((m) => ({ accountId: m.accountId, email: emailOf(m.accountId), requestedAt: m.createdAt }));
+          return json(res, 200, { requests });
+        }
+        const famMemberMatch = /^\/family\/members\/([^/]+)\/(approve|decline)$/.exec(p);
+        if (famMemberMatch && method === 'POST') {
+          const targetAccountId = famMemberMatch[1], action = famMemberMatch[2];
+          const fid = ownerFamilyOf(a.accountId);
+          if (!fid) return json(res, 403, { error: `only the owner can ${action} a request` });
+          const key = memberKey(fid, targetAccountId);
+          const m = familyMembers.get(key);
+          if (!m || m.status !== 'pending') return json(res, 404, { error: 'not found' });
+          if (action === 'approve') { m.status = 'active'; return json(res, 200, { ok: true }); }
+          familyMembers.delete(key); // decline
+          return json(res, 200, { ok: true });
+        }
+
+        const fam = activeFamilyOf(a.accountId);
 
         if (p === '/backup/begin' && method === 'POST') {
           if (!fam) return json(res, 409, { error: 'no family claimed', hint: 'POST /family/claim { familyId } first' });
@@ -248,6 +401,24 @@ function createFakeCloud({ port, appOrigin }) {
           });
           return json(res, 200, { token, url: `${APP_URL}#parcel=${token}` });
         }
+        // v1.15 Feature 1: list + revoke this family's own share links.
+        if (p === '/shares' && method === 'GET') {
+          if (!fam) return json(res, 409, { error: 'no family' });
+          const shares = [...shareLinks.entries()]
+            .filter(([, s]) => s.familyId === fam && !s.revokedAt && s.expiresAt > Date.now())
+            .sort((x, y) => y[1].createdAt - x[1].createdAt)
+            .map(([token, s]) => ({ token, title: s.title, url: `${APP_URL}#parcel=${token}`, createdAt: s.createdAt, expiresAt: s.expiresAt }));
+          return json(res, 200, { shares });
+        }
+        const revokeMatch = /^\/share\/([^/]+)\/revoke$/.exec(p);
+        if (revokeMatch && method === 'POST') {
+          const token = revokeMatch[1];
+          const s = shareLinks.get(token);
+          if (!s || s.revokedAt) return json(res, 404, { error: 'not found' });
+          if (s.familyId !== fam) return json(res, 403, { error: 'not your link' });
+          s.revokedAt = Date.now();
+          return json(res, 200, { ok: true });
+        }
 
         if (p === '/invite' && method === 'POST') {
           if (!fam) return json(res, 409, { error: 'no family' });
@@ -277,7 +448,9 @@ function createFakeCloud({ port, appOrigin }) {
           const it = inboxItems.get(acceptMatch[1]);
           // Isolation (contract invariant #4): a family can only see/accept its
           // OWN inbox rows — unknown id AND cross-family id both read as 404,
-          // never leaking whether the row exists for someone else.
+          // never leaking whether the row exists for someone else. A pending
+          // member has fam===null here, so it 404s the same way (falls out of
+          // `it.familyId !== fam` naturally — no special-casing needed).
           if (!it || it.familyId !== fam) return json(res, 404, { error: 'not found' });
           it.acceptedAt = Date.now();
           return json(res, 200, { ok: true });
@@ -324,6 +497,52 @@ function createFakeCloud({ port, appOrigin }) {
         return json(res, 200, { ok: true, id });
       }
 
+      // ---- v1.15 Feature 2: resumable multipart guest upload (invite-token auth) ----
+      const mpuMatch = /^\/inbox\/([^/]+)\/upload\/(init|complete|abort)$/.exec(p);
+      if (mpuMatch && method === 'POST') {
+        const inv = invites.get(mpuMatch[1]);
+        if (!inv) return json(res, 404, { error: 'this invitation could not be found' });
+        if (inv.revokedAt) return json(res, 410, { error: 'this invitation was cancelled' });
+        if (inv.expiresAt && inv.expiresAt < Date.now()) return json(res, 410, { error: 'this invitation has expired' });
+        const action = mpuMatch[2];
+        const body = await readJson(req);
+
+        if (action === 'init') {
+          const { sha256, mime, parts } = body;
+          if (!sha256 || !Number.isInteger(parts) || parts < 1) return json(res, 400, { error: 'sha256 + parts (int count) required' });
+          const uploadId = randToken(12);
+          const key = blobKey(inv.familyId, sha256);
+          multipartUploads.set(uploadId, { familyId: inv.familyId, key, sha256, mime: mime || null, expectedParts: parts, parts: new Map(), createdAt: Date.now() });
+          const partList = [];
+          for (let n = 1; n <= parts; n++) partList.push({ partNumber: n, url: `${base()}/__mpu/${uploadId}/${n}` });
+          return json(res, 200, { uploadId, key, parts: partList });
+        }
+
+        if (action === 'complete') {
+          const { sha256, uploadId, parts } = body;
+          const mpu = multipartUploads.get(uploadId);
+          if (!mpu || mpu.sha256 !== sha256) return json(res, 404, { error: 'upload not found' });
+          if (!Array.isArray(parts) || parts.length !== mpu.expectedParts) return json(res, 400, { error: 'all parts required to complete' });
+          const ordered = [...parts].sort((x, y) => x.partNumber - y.partNumber);
+          const chunks = [];
+          for (const part of ordered) {
+            const stored = mpu.parts.get(part.partNumber);
+            if (!stored) return json(res, 409, { error: `part ${part.partNumber} was never uploaded` });
+            if (stored.etag !== part.etag) return json(res, 409, { error: `part ${part.partNumber} etag mismatch — re-upload it` });
+            chunks.push(stored.bytes);
+          }
+          const full = Buffer.concat(chunks);
+          objects.set(mpu.key, { bytes: full, mime: mpu.mime || 'application/octet-stream' });
+          multipartUploads.delete(uploadId);
+          return json(res, 200, { ok: true });
+        }
+
+        // abort
+        const { uploadId } = body;
+        multipartUploads.delete(uploadId);
+        return json(res, 200, { ok: true });
+      }
+
       return json(res, 404, { error: 'unknown route' });
     } catch (e) {
       return json(res, 500, { error: e.message });
@@ -335,7 +554,7 @@ function createFakeCloud({ port, appOrigin }) {
     listen: () => new Promise((resolve) => server.listen(port, resolve)),
     close: () => new Promise((resolve) => server.close(resolve)),
     // exposed for specs that want to peek at state without a fresh HTTP round trip
-    _state: { accountsByEmail, sessions, familyOf, families, objects, blobMeta, backupState, shareLinks, invites, inboxItems },
+    _state: { accountsByEmail, sessions, familyMembers, families, familyInvites, objects, blobMeta, backupState, shareLinks, invites, inboxItems, multipartUploads },
   };
 }
 

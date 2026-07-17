@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.14.0';
+  const APP_VERSION = '1.15.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -103,7 +103,7 @@
     const ctx = { corner, corners, cornerName: corner ? corner.name : null };
     // The alpha notice gates everything on the owner's device — but never an
     // invited guest, whose page carries its own honest framing.
-    if (!isGuest && S.screen !== 'alphaNotice' && !(await DB.settings.get('alphaAck'))) {
+    if (!isGuest && S.screen !== 'alphaNotice' && S.screen !== 'join' && !(await DB.settings.get('alphaAck'))) {
       S.mode = 'kid';
       S.screen = 'alphaNotice';
     }
@@ -184,7 +184,7 @@
     const recordingLive = !!document.querySelector('.rec-dot.live');
     const unsavedDraft = !!(S.rec && S.rec.audioBlob);
     const playing = !!(player.audio && !player.audio.paused);
-    return !recordingLive && !unsavedDraft && !playing && S.screen !== 'guest' && S.screen !== 'give' && S.screen !== 'sync';
+    return !recordingLive && !unsavedDraft && !playing && S.screen !== 'guest' && S.screen !== 'give' && S.screen !== 'sync' && S.screen !== 'join';
   }
   function initUpdates() {
     if (!('serviceWorker' in navigator)) return;
@@ -218,6 +218,20 @@
       } catch (e) { /* offline / cloud unreachable — the app still opens */ }
     }
     initUpdates();
+    // A #join= link brings a co-parent in: they sign in (if needed), redeem the
+    // token, and land pending until the owner approves. Suppress auto-claim FIRST
+    // so no cloud touch on this path claims this device's own local corner as a
+    // new family — the joiner must stay uncorner'd until approval adopts the
+    // owner's shelf. The join screen carries its own framing + sign-in.
+    const joinM = (location.hash || '').match(/[#&]join=([A-Za-z0-9\-_]+)/);
+    if (joinM && window.Cloud) {
+      history.replaceState(null, '', location.pathname + location.search);
+      Cloud.setSuppressAutoClaim(true);
+      S.screen = 'join';
+      S.params = { joinToken: joinM[1] };
+      render();
+      return;
+    }
     // A #give= link opens the cloud guest page directly — the guest records and
     // it uploads straight to the family's shelf. Like #invite: no PIN, no setup.
     const give = Send.giveFromHash();
@@ -258,8 +272,20 @@
     // silent when offline). This is what makes cloud backup "seamless" after the
     // one-time sign-in — new recordings ride up on their own.
     if (window.Cloud && window.CloudAuth && CloudAuth.isSignedIn()) {
-      DB.settings.get('cloudLastBackup').then((last) => {
-        if (!last || Date.now() - last > 12 * 3600 * 1000) Cloud.autoBackup('open');
+      DB.readings.all().then((rs) => {
+        if (rs.length) {
+          DB.settings.get('cloudLastBackup').then((last) => {
+            if (!last || Date.now() - last > 12 * 3600 * 1000) Cloud.autoBackup('open');
+          }).catch(() => {});
+          return;
+        }
+        // A signed-in device with an empty local shelf — a fresh install, a new
+        // owner device, or a JUST-APPROVED CO-PARENT — quietly adopts the
+        // account's family library on open (merge-only, never deletes). A
+        // still-pending co-parent pulls nothing: ensureIdentity won't resolve a
+        // family yet, so pullBackup throws and is swallowed. This is the
+        // "library appears on next open" half of co-parent join.
+        Cloud.pullBackup().then(() => { if (UI.clearURLCache) UI.clearURLCache(); render(); }).catch(() => {});
       }).catch(() => {});
     }
     // Devices already holding readings should be marked must-keep even if

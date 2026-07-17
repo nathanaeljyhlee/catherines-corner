@@ -77,6 +77,39 @@ async function presign(env, k, method, expires = 600) {
   const url = new URL(objUrl(env, k)); url.searchParams.set('X-Amz-Expires', String(expires))
   return (await r2(env).sign(url.toString(), { method, aws: { signQuery: true } })).url
 }
+// --- resumable multipart (S3 MPU on R2) ---------------------------------
+// The worker SIGNS the create/complete/abort (server-to-server, needs the
+// XML response); the per-part PUTs are presigned so bytes go DIRECT to R2.
+async function mpuCreate(env, k) {
+  const req = await r2(env).sign(objUrl(env, k) + '?uploads', { method: 'POST' })
+  const res = await fetch(req)
+  if (!res.ok) return null
+  const xml = await res.text()
+  return (xml.match(/<UploadId>([^<]+)<\/UploadId>/) || [])[1] || null
+}
+// presign a single part PUT: partNumber + uploadId are part of the signed query
+async function presignPart(env, k, partNumber, uploadId, expires = 3600) {
+  const url = new URL(objUrl(env, k))
+  url.searchParams.set('partNumber', String(partNumber))
+  url.searchParams.set('uploadId', uploadId)
+  url.searchParams.set('X-Amz-Expires', String(expires))
+  return (await r2(env).sign(url.toString(), { method: 'PUT', aws: { signQuery: true } })).url
+}
+async function mpuComplete(env, k, uploadId, parts) {
+  const ordered = [...parts].sort((x, y) => x.partNumber - y.partNumber)
+  const body = `<CompleteMultipartUpload>${ordered
+    .map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${p.etag}</ETag></Part>`)
+    .join('')}</CompleteMultipartUpload>`
+  const req = await r2(env).sign(objUrl(env, k) + '?uploadId=' + encodeURIComponent(uploadId), { method: 'POST', body })
+  const res = await fetch(req)
+  // S3/R2 CompleteMultipartUpload can return HTTP 200 with an <Error> body — treat that as failure.
+  const text = await res.text().catch(() => '')
+  return res.ok && !/<Error[\s>]/.test(text)
+}
+async function mpuAbort(env, k, uploadId) {
+  const req = await r2(env).sign(objUrl(env, k) + '?uploadId=' + encodeURIComponent(uploadId), { method: 'DELETE' })
+  return (await fetch(req)).ok
+}
 
 // --- DB -----------------------------------------------------------------
 const db = (env) => neon(env.DATABASE_URL)
@@ -88,7 +121,7 @@ async function ensureAccount(sql, email) {
 }
 async function resolveFamily(sql, a) {
   if (a.testFam) { await sql`INSERT INTO family (id) VALUES (${a.testFam}) ON CONFLICT (id) DO NOTHING`; return a.testFam }
-  const rows = await sql`SELECT family_id FROM family_member WHERE account_id = ${a.accountId} ORDER BY created_at LIMIT 1`
+  const rows = await sql`SELECT family_id FROM family_member WHERE account_id = ${a.accountId} AND status = 'active' ORDER BY created_at LIMIT 1`
   return rows.length ? rows[0].family_id : null
 }
 
@@ -174,8 +207,8 @@ export default {
     let mShare
     if ((mShare = path.match(/^\/share\/([^/]+)$/)) && method === 'GET') {
       const token = decodeURIComponent(mShare[1])
-      const row = (await sql`SELECT family_id, manifest_key, title, to_family_id, expires_at, claimed_at FROM share_link WHERE token = ${token}`)[0]
-      if (!row || isPast(row.expires_at)) return json(404, { error: 'not found' })
+      const row = (await sql`SELECT family_id, manifest_key, title, to_family_id, expires_at, claimed_at, revoked_at FROM share_link WHERE token = ${token}`)[0]
+      if (!row || isPast(row.expires_at) || row.revoked_at) return json(404, { error: 'not found' })
       // server-side read of the envelope we wrote at share time (manifest + declared sha list)
       let env0
       try { env0 = await (await fetch(await presign(env, row.manifest_key, 'GET'))).json() }
@@ -201,6 +234,54 @@ export default {
       // blobs land content-addressed in THIS invite's family space; the guest can write nowhere else
       for (const b of blobs) { if (!b.sha256) continue; uploads.push({ sha256: b.sha256, url: await presign(env, blobKey(inv.family_id, b.sha256), 'PUT') }) }
       return json(200, { uploads })
+    }
+
+    // Resumable multipart for a long recording (invite token, NOT a session).
+    // init -> client PUTs each part direct to R2 -> complete (or abort). Blobs
+    // still land content-addressed in THIS invite's family space; nowhere else.
+    // These three sit ABOVE the single-PUT route only in intent; the `$` anchors
+    // keep /upload, /upload/init, /upload/complete, /upload/abort disjoint.
+    async function inviteFor(token) {
+      if (!isUuid(token)) return null
+      const inv = (await sql`SELECT id, family_id, expires_at, revoked_at FROM invite WHERE id = ${token}`)[0]
+      if (!inv || inv.revoked_at || isPast(inv.expires_at)) return null
+      return inv
+    }
+    let mMpInit
+    if ((mMpInit = path.match(/^\/inbox\/([^/]+)\/upload\/init$/)) && method === 'POST') {
+      const inv = await inviteFor(decodeURIComponent(mMpInit[1]))
+      if (!inv) return json(404, { error: 'not found' })
+      const body = await request.json().catch(() => ({}))
+      const sha = body.sha256, count = Number(body.parts)
+      if (!sha || !Number.isInteger(count) || count < 1) return json(400, { error: 'sha256 and a part count are required' })
+      const key = blobKey(inv.family_id, sha)
+      const uploadId = await mpuCreate(env, key)
+      if (!uploadId) return json(502, { error: 'could not start the upload' })
+      const parts = []
+      for (let n = 1; n <= count; n++) parts.push({ partNumber: n, url: await presignPart(env, key, n, uploadId) })
+      return json(200, { uploadId, key, parts })
+    }
+    let mMpDone
+    if ((mMpDone = path.match(/^\/inbox\/([^/]+)\/upload\/complete$/)) && method === 'POST') {
+      const inv = await inviteFor(decodeURIComponent(mMpDone[1]))
+      if (!inv) return json(404, { error: 'not found' })
+      const body = await request.json().catch(() => ({}))
+      const sha = body.sha256, uploadId = body.uploadId
+      const parts = Array.isArray(body.parts) ? body.parts.filter((p) => p && p.partNumber && p.etag) : []
+      if (!sha || !uploadId || !parts.length) return json(400, { error: 'sha256, uploadId and parts are required' })
+      const ok = await mpuComplete(env, blobKey(inv.family_id, sha), uploadId, parts)
+      if (!ok) return json(502, { error: 'could not finish the upload' })
+      return json(200, { ok: true })
+    }
+    let mMpStop
+    if ((mMpStop = path.match(/^\/inbox\/([^/]+)\/upload\/abort$/)) && method === 'POST') {
+      const inv = await inviteFor(decodeURIComponent(mMpStop[1]))
+      if (!inv) return json(404, { error: 'not found' })
+      const body = await request.json().catch(() => ({}))
+      const sha = body.sha256, uploadId = body.uploadId
+      if (!sha || !uploadId) return json(400, { error: 'sha256 and uploadId are required' })
+      await mpuAbort(env, blobKey(inv.family_id, sha), uploadId)
+      return json(200, { ok: true })
     }
 
     // Guest commits an inbox_item after the bytes are up (invite token, NOT a session).
@@ -242,9 +323,81 @@ export default {
     // Which family does THIS account already belong to? A new device adopts this
     // instead of claiming its own local Corner ID (multi-device support).
     if (path === '/family/mine' && method === 'GET') {
-      if (a.testFam) return json(200, { familyId: a.testFam })
-      const rows = await sql`SELECT family_id FROM family_member WHERE account_id = ${a.accountId} ORDER BY created_at LIMIT 1`
-      return json(200, { familyId: rows.length ? rows[0].family_id : null })
+      if (a.testFam) return json(200, { familyId: a.testFam, pendingFamilyId: null })
+      const act = await sql`SELECT family_id FROM family_member WHERE account_id = ${a.accountId} AND status = 'active' ORDER BY created_at LIMIT 1`
+      const pend = await sql`SELECT family_id FROM family_member WHERE account_id = ${a.accountId} AND status = 'pending' ORDER BY created_at LIMIT 1`
+      return json(200, { familyId: act.length ? act[0].family_id : null, pendingFamilyId: pend.length ? pend[0].family_id : null })
+    }
+
+    // --- Feature 3: co-parent join (owner-approved family_member) ---
+    // These live ABOVE the resolveFamily 409 gate because a joiner has no active
+    // family yet. Owner-only routes independently prove ownership via
+    // family.owner_account_id; approval flips a member from 'pending' -> 'active'.
+    const ownerFamily = async () => (await sql`SELECT id FROM family WHERE owner_account_id = ${a.accountId}`)[0]
+
+    // Owner mints a 14-day join link.
+    if (path === '/family/invite' && method === 'POST') {
+      const own = await ownerFamily()
+      if (!own) return json(403, { error: 'only the owner can invite' })
+      const token = urlToken()
+      await sql`INSERT INTO family_invite (token, family_id, created_by, expires_at)
+                VALUES (${token}, ${own.id}, ${a.accountId}, now() + interval '14 days')`
+      return json(200, { joinToken: token, url: env.APP_URL.replace(/\/+$/, '') + '/#join=' + token })
+    }
+
+    // Co-parent redeems the link -> lands 'pending'. 409 if they already own/belong to a DIFFERENT corner.
+    if (path === '/family/join' && method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const token = String(body.token || '').trim()
+      if (!token) return json(400, { error: 'token required' })
+      const inv = (await sql`SELECT token, family_id, expires_at, used_at FROM family_invite WHERE token = ${token}`)[0]
+      if (!inv || isPast(inv.expires_at) || inv.used_at) return json(404, { error: 'not found' })
+      const mine = await resolveFamily(sql, a)
+      if (mine) {
+        if (mine === inv.family_id) return json(200, { status: 'active', familyId: mine }) // already an active member of this corner
+        return json(409, { error: 'you already have a corner', hint: 'co-parent join is for an account without its own corner' })
+      }
+      // idempotent: re-redeem keeps existing status (a pending member stays pending)
+      await sql`INSERT INTO family_member (family_id, account_id, role, status)
+                VALUES (${inv.family_id}, ${a.accountId}, 'member', 'pending')
+                ON CONFLICT (family_id, account_id) DO UPDATE SET status = family_member.status`
+      await sql`UPDATE family_invite SET used_at = now() WHERE token = ${token} AND used_at IS NULL`
+      const cur = (await sql`SELECT status FROM family_member WHERE family_id = ${inv.family_id} AND account_id = ${a.accountId}`)[0]
+      return json(200, { status: cur ? cur.status : 'pending', familyId: inv.family_id })
+    }
+
+    // Owner lists pending join requests (with the requester's email).
+    if (path === '/family/requests' && method === 'GET') {
+      const own = await ownerFamily()
+      if (!own) return json(403, { error: 'only the owner can view requests' })
+      const rows = await sql`SELECT fm.account_id, acc.email, fm.created_at
+                             FROM family_member fm JOIN account acc ON acc.id = fm.account_id
+                             WHERE fm.family_id = ${own.id} AND fm.status = 'pending' ORDER BY fm.created_at`
+      return json(200, { requests: rows.map((r) => ({ accountId: r.account_id, email: r.email, requestedAt: r.created_at })) })
+    }
+
+    // Owner approves a pending member -> 'active' (existing family-scoped flows just work).
+    let mApprove
+    if ((mApprove = path.match(/^\/family\/members\/([^/]+)\/approve$/)) && method === 'POST') {
+      const target = decodeURIComponent(mApprove[1])
+      if (!isUuid(target)) return json(404, { error: 'not found' })
+      const own = await ownerFamily()
+      if (!own) return json(403, { error: 'only the owner can approve' })
+      const upd = await sql`UPDATE family_member SET status = 'active'
+                            WHERE family_id = ${own.id} AND account_id = ${target} AND status = 'pending' RETURNING account_id`
+      if (!upd.length) return json(404, { error: 'not found' })
+      return json(200, { ok: true })
+    }
+
+    // Owner declines a pending member -> removed.
+    let mDecline
+    if ((mDecline = path.match(/^\/family\/members\/([^/]+)\/decline$/)) && method === 'POST') {
+      const target = decodeURIComponent(mDecline[1])
+      if (!isUuid(target)) return json(404, { error: 'not found' })
+      const own = await ownerFamily()
+      if (!own) return json(403, { error: 'only the owner can decline' })
+      await sql`DELETE FROM family_member WHERE family_id = ${own.id} AND account_id = ${target} AND status = 'pending'`
+      return json(200, { ok: true })
     }
 
     const fam = await resolveFamily(sql, a)
@@ -303,6 +456,30 @@ export default {
       await sql`INSERT INTO share_link (token, family_id, kind, manifest_key, title, to_family_id, expires_at)
                 VALUES (${token}, ${fam}, 'parcel', ${manifestKey}, ${body.title || null}, ${body.toFamilyId || null}, now() + interval '30 days')`
       return json(200, { token, url: env.APP_URL.replace(/\/+$/, '') + '/#parcel=' + token })
+    }
+
+    // --- Feature 1: list a family's live share links (JWT + active family) ---
+    if (path === '/shares' && method === 'GET') {
+      const rows = await sql`SELECT token, title, created_at, expires_at FROM share_link
+                             WHERE family_id = ${fam} AND revoked_at IS NULL AND expires_at > now() ORDER BY created_at DESC`
+      return json(200, { shares: rows.map((r) => ({ token: r.token, title: r.title, url: env.APP_URL.replace(/\/+$/, '') + '/#parcel=' + r.token, createdAt: r.created_at, expiresAt: r.expires_at })) })
+    }
+
+    // --- Feature 1: cancel a share link (JWT + family owns it) ---
+    // Regex anchored with /revoke so it never collides with the GET /share/{token}
+    // capability route above; POST-only, in the session-gated section.
+    let mRevoke
+    if ((mRevoke = path.match(/^\/share\/([^/]+)\/revoke$/)) && method === 'POST') {
+      const token = decodeURIComponent(mRevoke[1])
+      const upd = await sql`UPDATE share_link SET revoked_at = now()
+                            WHERE token = ${token} AND family_id = ${fam} AND revoked_at IS NULL RETURNING token`
+      if (!upd.length) {
+        // exists under another family -> 403; otherwise unknown/already-revoked -> calm 404
+        const row = (await sql`SELECT family_id FROM share_link WHERE token = ${token}`)[0]
+        if (row && row.family_id !== fam) return json(403, { error: 'not your link' })
+        return json(404, { error: 'not found' })
+      }
+      return json(200, { ok: true })
     }
 
     // --- Phase 4: mint an upload invite (JWT + family) ---
