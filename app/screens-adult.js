@@ -8,6 +8,52 @@
   const { el, esc, fmt, toast, avatar, blobURL, dropURL, clearURLCache, AV_COLORS, backLink, downloadBlob, safeName } = UI;
   const { S, go, register, render } = App;
 
+  // ---------- cloud inbox ("record on the shelf" arrivals) ----------
+  // Recordings a loved one made via a #give= link wait in the family's cloud
+  // inbox until a grown-up tucks them in. Checked quietly (throttled, only when
+  // signed in AND online); any failure is silent — offline-first means the home
+  // screen never waits on, or breaks over, the network. The result is cached so
+  // the home screen and the manual "check for arrivals" button don't double-fetch.
+  let _arrivals = { at: 0, items: [] };
+  async function loadArrivals(force) {
+    if (!(window.Cloud && window.CloudAuth && CloudAuth.isSignedIn())) return [];
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return _arrivals.items;
+    if (!force && Date.now() - _arrivals.at < 3 * 60 * 1000) return _arrivals.items;
+    try {
+      const { items } = await Cloud.checkInbox();
+      _arrivals = { at: Date.now(), items: items || [] };
+    } catch (e) { /* quiet — offline or transient, try again next open */ }
+    return _arrivals.items;
+  }
+  function renderArrivals(box, items) {
+    box.innerHTML = '';
+    for (const item of (items || [])) {
+      const who = item.fromName || 'someone who loves them';
+      const card = el(
+        '<button class="home-card" style="border-color:var(--warm); background:var(--highlight)">' +
+        '<span class="ic">🎁</span><span class="t">A recording from ' + esc(who) + ' arrived</span>' +
+        '<span class="d">' + (item.note ? '“' + esc(item.note) + '” — ' : '') +
+        'tap to listen and tuck it onto the shelf.</span></button>');
+      card.onclick = async () => {
+        card.disabled = true;
+        try {
+          const blob = await Cloud.fetchArrivalBlob(item);
+          const file = Backup.normalizeAudioFile(new File([blob], 'a reading', { type: item.mime || blob.type || 'audio/mp4' }));
+          const duration = (await UI.probeDuration(file)) || 0;
+          if (!duration) { card.disabled = false; return toast('That recording couldn’t be read as audio.'); }
+          await Cloud.acceptInbox(item.id).catch(() => {});   // received — it leaves the inbox
+          _arrivals.items = _arrivals.items.filter((x) => x.id !== item.id);
+          DB.metrics.bump('give.accepted');
+          App.startRecordFlow({ audioBlob: file, duration, imported: true });
+        } catch (e) {
+          card.disabled = false;
+          toast('Couldn’t bring that recording in just now — try again in a moment.');
+        }
+      };
+      box.appendChild(card);
+    }
+  }
+
   // =========================================================
   // PIN GATE (lazy — set on first exit from kid mode)
   // =========================================================
@@ -165,6 +211,13 @@
       };
       root.appendChild(sh);
     }
+
+    // 🎁 Recordings that arrived via a "record on the shelf" link, waiting to be
+    // tucked in. Filled asynchronously (quiet, throttled) so the home screen
+    // paints immediately and never blocks on the network.
+    const arrivalsBox = el('<div></div>');
+    root.appendChild(arrivalsBox);
+    loadArrivals(false).then((items) => renderArrivals(arrivalsBox, items)).catch(() => {});
 
     // First-boot import nudge: an existing user (has recordings, not signed in)
     // gets a one-time prompt to fold their pre-cloud library into cloud backup.
@@ -436,6 +489,19 @@
         };
       };
       (CloudAuth.isSignedIn() ? signedIn : signedOut)();
+      // A manual "check for arrivals" — for the impatient grown-up who knows a
+      // recording is on its way and doesn't want to wait for the quiet check.
+      if (CloudAuth.isSignedIn()) {
+        const arr = el('<p class="hint" style="margin-top:10px"><a href="#" id="checkarr">🎁 Check for recordings sent to the shelf</a></p>');
+        ccard.appendChild(arr);
+        arr.querySelector('#checkarr').onclick = async (e) => {
+          e.preventDefault();
+          const a = e.target; a.textContent = 'Checking…';
+          const items = await loadArrivals(true);
+          if (items.length) { toast(items.length + ' recording' + (items.length === 1 ? '' : 's') + ' waiting — see the grown-up home.'); go('home'); }
+          else { a.textContent = '🎁 Check for recordings sent to the shelf'; toast('No new recordings waiting just now.'); }
+        };
+      }
     }
 
     const scard = el(
@@ -831,6 +897,51 @@
       'Their Corner ID? (optional — they can find it under Keep it safe.\n' +
       'Addressed parcels land on the right shelf without a second thought; leave blank to send it open.)', last);
     if (toId === null) return;   // changed their mind
+    offerParcelSend(what, title, toId, btn);
+  }
+
+  // Two honest ways a parcel travels: a self-contained FILE (works offline, no
+  // account — they save it and bring it in) or a share LINK (needs cloud sign-in;
+  // nothing to attach, they just tap it). The file path stays first-class; the
+  // link is an add-on, and only shows when the cloud is even configured.
+  function offerParcelSend(what, title, toId, btn) {
+    const cloudable = !!(window.Cloud && window.CloudAuth);
+    const sheet = el(
+      '<div class="handoff"><div class="card">' +
+      '<div class="kicker">send this parcel</div>' +
+      '<p style="margin:8px 0 0; word-break:break-word"><b>' + esc(title) + '</b></p>' +
+      '<p class="hint" style="margin-top:6px">Send it as a file (works offline, no account — they save it and bring it in), or as a link they just tap.</p>' +
+      '<div class="btn-row" style="margin-top:12px">' +
+      (cloudable ? '<button class="btn primary" data-link>🔗 Send as a link</button>' : '') +
+      '<button class="btn' + (cloudable ? '' : ' primary') + '" data-file>📎 Send as a file</button>' +
+      '<button class="btn ghost" data-cancel>cancel</button></div>' +
+      '<div class="hint" id="psheetmsg" style="margin-top:10px"></div></div></div>');
+    const close = () => sheet.remove();
+    const msg = sheet.querySelector('#psheetmsg');
+    sheet.querySelector('[data-cancel]').onclick = close;
+    sheet.querySelector('[data-file]').onclick = async () => { close(); await packAndSendFile(what, title, toId, btn); };
+    const linkBtn = sheet.querySelector('[data-link]');
+    if (linkBtn) linkBtn.onclick = async () => {
+      if (!CloudAuth.isSignedIn()) { close(); toast('Sign in first to send a link — opening Keep it safe.'); return go('safety'); }
+      linkBtn.disabled = true; linkBtn.textContent = '🔗 making a link…';
+      try {
+        const { manifest, files } = await Backup.packParcel(Object.assign({}, what, { toId }));
+        if (manifest.to) await DB.settings.set('lastParcelTo', manifest.to);
+        const { url } = await Cloud.pushParcel(manifest, files);
+        DB.metrics.bump('share.parcel_link_sent');
+        close();
+        await Send.shareText(url);
+      } catch (e) {
+        linkBtn.disabled = false; linkBtn.textContent = '🔗 Send as a link';
+        msg.textContent = /no family/i.test(e.message || '')
+          ? 'Set up cloud backup first (Keep it safe), then try the link again.'
+          : 'Couldn’t make a link just now — you can still send it as a file.';
+      }
+    };
+    document.body.appendChild(sheet);
+  }
+
+  async function packAndSendFile(what, title, toId, btn) {
     const label = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '📦 packing…'; }
     try {
@@ -934,6 +1045,25 @@
         btns.appendChild(el('<button class="btn" data-done>mark read</button>'));
         btns.querySelector('[data-rec]').onclick = () => { DB.metrics.bump('invite.record_now'); App.startRecordFlow({ bookId: q.bookId, requestId: q.id, readerId: q.readerId }); };
         btns.querySelector('[data-done]').onclick = async () => { q.status = 'done'; await DB.requests.save(q); render(); };
+        // A cloud "record on the shelf" link: they record on their phone and it
+        // lands straight on the shelf — no file to attach and send back. Needs a
+        // cloud account; the ✉️/💬/⧉/preview buttons above stay the offline path.
+        if (window.Cloud && window.CloudAuth) {
+          const shelfBtn = el('<button class="btn" data-shelf title="a link that records straight onto the shelf — needs cloud sign-in">🔗 record on the shelf</button>');
+          shelfBtn.onclick = async () => {
+            if (!CloudAuth.isSignedIn()) { toast('Sign in under Keep it safe first to use shelf links.'); return go('safety'); }
+            shelfBtn.disabled = true; shelfBtn.textContent = '🔗 making a link…';
+            try {
+              const { url } = await Cloud.createInvite({ kidName: ctx.cornerName, bookTitle: bk ? bk.title : q.bookTitle });
+              DB.metrics.bump('invite.shelf_link_created');
+              await Send.shareText(url);
+            } catch (e) {
+              toast('Couldn’t make a shelf link just now — the ✉️ and 💬 options above always work.');
+            }
+            shelfBtn.disabled = false; shelfBtn.textContent = '🔗 record on the shelf';
+          };
+          btns.appendChild(shelfBtn);
+        }
         row.appendChild(btns);
         // The half of the loop that lands back here: say plainly how the
         // recording they send back becomes a reading.

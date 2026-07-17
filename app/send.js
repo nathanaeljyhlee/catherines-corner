@@ -39,6 +39,13 @@
     const m = (location.hash || '').match(/#invite=([A-Za-z0-9\-_]+)/);
     return m ? decodeInvite(m[1]) : null;
   }
+  // A #give= link is the cloud cousin of #invite: the guest records HERE and the
+  // recording uploads straight to the family's shelf (Phase 4), instead of the
+  // guest saving a file to send back by hand. The token names the invite row.
+  function giveFromHash() {
+    const m = (location.hash || '').match(/[#&]give=([A-Za-z0-9\-_]+)/);
+    return m ? m[1] : null;
+  }
 
   // ---------- the words that travel ----------
   // Honest about the loop: the recording comes back to the grown-up, who
@@ -216,5 +223,93 @@
 
   App.register('guest', guestScreen, { guest: true });
 
-  window.Send = { appURL, siteURL, inviteLink, decodeInvite, inviteFromHash, requestMessage, sendRow, shareText, shareFile };
+  // =========================================================
+  // GIVE PAGE — what a #give= link opens on the guest's own phone.
+  // Same warmth as the invite guest page, but the recording is UPLOADED to the
+  // family's cloud inbox (Cloud does the only networking) — it lands on the
+  // child's shelf the moment the grown-up taps to accept it. No PIN, no account,
+  // nothing kept on this device.
+  // =========================================================
+  async function giveScreen(root) {
+    const token = App.S.params.give;
+    DB.metrics.bump('give.opened');
+
+    root.appendChild(el(
+      '<div class="kicker">an invitation to read</div>' +
+      '<h1 class="screen-title">Read a story — it lands right on their shelf</h1>' +
+      '<p class="screen-sub">Catherine’s Corner keeps the voices of the people a little one loves, to listen to for years. ' +
+      'Nothing to install, no account: read aloud right here, and when you send it, it goes straight onto their shelf. ' +
+      '<a href="' + esc(siteURL()) + '" target="_blank" rel="noopener">See what it looks like ↗</a></p>'));
+
+    const stageWrap = el('<div></div>');
+    root.appendChild(stageWrap);
+
+    function showCapture() {
+      stageWrap.innerHTML = '';
+      stageWrap.appendChild(capturePanel({
+        statusIdle: 'ready when you are',
+        note: '…or bring a recording you already made — a voice memo works beautifully.',
+        onAudio: (blob, duration) => { DB.metrics.bump('give.recorded'); showSend(blob, duration); },
+      }));
+      stageWrap.appendChild(el(
+        '<p class="hint" style="margin-top:12px">💡 Keep this link — any time you’d like to send another story, come back here and record again.</p>'));
+    }
+
+    function showSend(blob, duration) {
+      stageWrap.innerHTML = '';
+      const url = URL.createObjectURL(blob);
+      const card = el(
+        '<div class="card"><div class="kicker">your reading — ' + fmt(duration || 0) + '</div>' +
+        '<p class="hint" style="margin-top:8px">Listen back if you like, then put it on the shelf.</p>' +
+        '<audio controls style="width:100%; margin-top:12px" src="' + url + '"></audio>' +
+        '<div class="field" style="margin-top:12px"><label>Your name (so they know who read)</label>' +
+        '<input type="text" id="gname" placeholder="e.g. Grandma" maxlength="60"></div>' +
+        '<div class="field"><label>A little note (optional)</label>' +
+        '<input type="text" id="gnote" placeholder="e.g. love you to the moon" maxlength="200"></div>' +
+        '<div class="btn-row">' +
+        '<button class="btn primary big" id="put">📚 Put it on the shelf</button>' +
+        '<button class="btn ghost" id="again">↺ record again</button></div>' +
+        '<div id="gprog" class="hint" style="margin-top:10px"></div></div>');
+      stageWrap.appendChild(card);
+      card.querySelector('#again').onclick = () => { URL.revokeObjectURL(url); showCapture(); };
+      card.querySelector('#put').onclick = async () => {
+        const put = card.querySelector('#put'), prog = card.querySelector('#gprog');
+        const fromName = (card.querySelector('#gname').value || '').trim();
+        const note = (card.querySelector('#gnote').value || '').trim();
+        put.disabled = true;
+        try {
+          prog.textContent = 'Sending… 0%';
+          const { sha256, mime } = await Cloud.inboxUpload(token, blob, (p) => { prog.textContent = 'Sending… ' + Math.round(p * 100) + '%'; });
+          prog.textContent = 'Almost there…';
+          await Cloud.inboxCommit(token, { blobSha256: [sha256], mime, fromName, note });
+          DB.metrics.bump('give.sent');
+          URL.revokeObjectURL(url);
+          showDone(fromName);
+        } catch (e) {
+          put.disabled = false; prog.textContent = '';
+          toast(/40[34]|not found|expired/i.test(e.message || '')
+            ? 'This invitation has expired — ask them to send a fresh link.'
+            : 'That didn’t go through — check your connection and try again.');
+        }
+      };
+    }
+
+    function showDone(fromName) {
+      stageWrap.innerHTML = '';
+      const done = el(
+        '<div class="card" style="text-align:center"><div style="font-size:40px">✓</div>' +
+        '<h2 class="serif" style="font-size:22px; margin-top:6px">It’s on the shelf.</h2>' +
+        '<p class="hint" style="margin-top:8px">Thank you' + (fromName ? ', ' + esc(fromName) : '') +
+        ' — your voice is waiting for them now. Come back to this link any time to send another.</p>' +
+        '<div class="btn-row" style="justify-content:center"><button class="btn" id="more">Record another</button></div></div>');
+      stageWrap.appendChild(done);
+      done.querySelector('#more').onclick = () => showCapture();
+    }
+
+    showCapture();
+  }
+
+  App.register('give', giveScreen, { guest: true });
+
+  window.Send = { appURL, siteURL, inviteLink, decodeInvite, inviteFromHash, giveFromHash, requestMessage, sendRow, shareText, shareFile };
 })();

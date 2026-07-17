@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.13.4';
+  const APP_VERSION = '1.14.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -128,7 +128,9 @@
     await fn(body, ctx);
 
     const foot = el('<footer class="appfoot">' +
-      (isGuest ? 'Recorded right here, sent back by you — nothing is uploaded anywhere. · v' + APP_VERSION
+      (isGuest ? (S.screen === 'give'
+          ? 'Recorded right here. Your reading goes straight to their shelf. · v' + APP_VERSION
+          : 'Recorded right here, sent back by you — nothing is uploaded anywhere. · v' + APP_VERSION)
         : 'Everything stays on this device — back it up under “Keep it safe.” · ' +
           '<button class="foot-ver" id="vlink" title="what’s new in this version">v' + APP_VERSION + ' ✨</button>') +
       '</footer>');
@@ -182,7 +184,7 @@
     const recordingLive = !!document.querySelector('.rec-dot.live');
     const unsavedDraft = !!(S.rec && S.rec.audioBlob);
     const playing = !!(player.audio && !player.audio.paused);
-    return !recordingLive && !unsavedDraft && !playing && S.screen !== 'guest' && S.screen !== 'sync';
+    return !recordingLive && !unsavedDraft && !playing && S.screen !== 'guest' && S.screen !== 'give' && S.screen !== 'sync';
   }
   function initUpdates() {
     if (!('serviceWorker' in navigator)) return;
@@ -216,12 +218,37 @@
       } catch (e) { /* offline / cloud unreachable — the app still opens */ }
     }
     initUpdates();
+    // A #give= link opens the cloud guest page directly — the guest records and
+    // it uploads straight to the family's shelf. Like #invite: no PIN, no setup.
+    const give = Send.giveFromHash();
+    if (give) {
+      S.screen = 'give';
+      S.params = { give };
+      render();
+      return;
+    }
     // An invite link opens the guest page directly — no PIN, no shelf, no setup.
     const invite = Send.inviteFromHash();
     if (invite) {
       S.screen = 'guest';
       S.params = { invite };
       render();
+      return;
+    }
+    // A #parcel= share link (Phase 3): pull the parcel from the cloud, then route
+    // into the SAME accept screen a file parcel uses (zero new merge code). Calm
+    // on an expired/garbage token or when offline — the app still opens normally.
+    const pm = (location.hash || '').match(/[#&]parcel=([^&]+)/);
+    if (pm && window.Cloud) {
+      const token = decodeURIComponent(pm[1]);
+      history.replaceState(null, '', location.pathname + location.search);
+      await checkSharedInbox();
+      render();
+      Cloud.pullParcel(token)
+        .then(({ manifest, map }) => go('acceptParcel', { parcel: { m: manifest, map } }))
+        .catch((err) => toast(/40[34]|not found/i.test((err && err.message) || '')
+          ? 'That share link has expired or isn’t valid anymore — ask for a fresh one.'
+          : 'Couldn’t open that shared parcel just now — you may be offline.'));
       return;
     }
     await checkSharedInbox();

@@ -375,8 +375,12 @@
   }
 
   // ---------- parcels: one book (or told story) from one family to another ----------
-  // exportParcel({bookId} | {readingId}, toId?) → {blob, manifest}
-  async function exportParcel({ bookId, readingId, toId }) {
+  // Pack a parcel WITHOUT choosing a container → { manifest, files } (files are
+  // {name, blob}, no manifest.json). exportParcel zips it (the file path a family
+  // saves and brings in); cloud.js content-hashes the same files and uploads them
+  // (the share-link path). One source of truth for the parcel manifest, so both
+  // paths hand the receiver the exact same thing.
+  async function packParcel({ bookId, readingId, toId }) {
     const corner = await DB.corners.active();
     let book = null, readings = [];
     if (bookId) {
@@ -403,8 +407,15 @@
       to: DB.familyIdFrom(toId) || (toId || '').trim().toUpperCase() || null,
       readers, book: bookOut, readings: readingsOut,
     };
-    files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
-    return { blob: await makeZip(files), manifest };
+    return { manifest, files };
+  }
+
+  // exportParcel({bookId} | {readingId}, toId?) → {blob, manifest}
+  async function exportParcel(args) {
+    const { manifest, files } = await packParcel(args);
+    const zipFiles = files.slice();
+    zipFiles.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
+    return { blob: await makeZip(zipFiles), manifest };
   }
 
   // Accept a parcel into the ACTIVE corner. Semantics that keep it safe:
@@ -459,5 +470,5 @@
     return counts;
   }
 
-  window.Backup = { packAll, exportAll, exportDelta, importFile, inspect, importBackup, exportParcel, importParcel, audioExt, normalizeAudioFile };
+  window.Backup = { packAll, exportAll, exportDelta, importFile, inspect, importBackup, packParcel, exportParcel, importParcel, audioExt, normalizeAudioFile };
 })();
