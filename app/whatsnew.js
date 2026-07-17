@@ -14,6 +14,22 @@
   // Newest first. Each slide: version chip, an emoji "picture", title, words.
   const RELEASES = [
     {
+      v: '1.13', slides: [
+        {
+          art: '📱 <span class="arrows">→</span> ☁️ <span class="arrows">→</span> 📱',
+          sub: 'so a lost device never loses the voices',
+          title: 'Back up to the cloud',
+          text: 'Your recordings can now live safely in the cloud, not just on this one device. Turn it on under Keep it safe, and if a tablet is ever lost or replaced, every voice comes back on the new one. The plain zip backup stays first-class too, and nothing is uploaded unless you turn this on.',
+        },
+        {
+          art: '✉️ <span class="arrows">→</span> 🔢',
+          sub: 'a code, not a password',
+          title: 'Signing in is just your email',
+          text: 'Go to “Keep it safe”, type your email, and we send you a 6-digit code. Read it on any device (your phone is fine) and type it into the app to sign in. It works on a shared tablet, and this cloud account is separate from the grown-up code on this device. Then tap “Back up to the cloud”, and on a new device sign in and “Restore from the cloud”.',
+        },
+      ],
+    },
+    {
       v: '1.12.2', slides: [
         {
           art: '💬 <span class="arrows">→</span> 📦 <span class="arrows">→</span> 🏠',
