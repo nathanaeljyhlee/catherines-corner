@@ -156,6 +156,20 @@
       root.appendChild(sh);
     }
 
+    // First-boot import nudge: an existing user (has recordings, not signed in)
+    // gets a one-time prompt to fold their pre-cloud library into cloud backup.
+    if (window.Cloud && window.CloudAuth && !CloudAuth.isSignedIn() && readings.length && !(await DB.settings.get('cloudNudgeDismissed'))) {
+      const nudge = el(
+        '<button class="home-card" style="border-color:var(--warm); background:var(--highlight)">' +
+        '<span class="ic">☁️</span><span class="t">New — keep these safe in the cloud</span>' +
+        '<span class="d">Your recordings live only on this device today. Sign in once under Keep it safe and they’re backed up, so a lost device never means losing the voices. <span class="linklike" id="cloudlater">Not now</span></span></button>');
+      nudge.onclick = (e) => {
+        if (e.target && e.target.id === 'cloudlater') { e.stopPropagation(); DB.settings.set('cloudNudgeDismissed', 1).then(render); return; }
+        go('safety');
+      };
+      root.appendChild(nudge);
+    }
+
     const grid = el('<div class="home-grid"></div>');
     const cards = [
       ['record', '🎙️', 'Record a reading', 'Just read — pages come after. Or import a recording you already have.'],
