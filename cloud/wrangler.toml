@@ -1,5 +1,6 @@
 name = "catherines-corner-cloud"
 main = "src/index.js"
+account_id = "43ba2e655c38cf563c3bcc3772809c42"
 compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]
 
