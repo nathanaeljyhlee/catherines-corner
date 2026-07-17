@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.13.0';
+  const APP_VERSION = '1.13.1';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -203,17 +203,19 @@
   }
 
   // ---------- boot ----------
-  document.addEventListener('DOMContentLoaded', () => {
-    initUpdates();
-    // A magic sign-in link (#magic=…) redeems on load; the session is stored and
-    // the token scrubbed from the URL. Land normally; the cloud card shows signed-in.
+  document.addEventListener('DOMContentLoaded', async () => {
+    // A magic sign-in link (#magic=…) is handled FIRST and awaited, so the
+    // session is set before the app paints (the cloud card shows signed-in and
+    // there's no render race). CloudAuth.init also loads any stored session.
+    let magicMsg = null;
     if (window.CloudAuth) {
-      CloudAuth.init().then(res => {
-        if (!res) return;
-        if (res.email) { toast('Signed in as ' + res.email + '. Cloud backup is under “for grown-ups → Keep it safe.”'); render(); }
-        else if (res.error) toast(res.error);
-      }).catch(() => {});
+      try {
+        const res = await CloudAuth.init();
+        if (res && res.email) magicMsg = 'Signed in as ' + res.email + '. Cloud backup is under “for grown-ups → Keep it safe.”';
+        else if (res && res.error) magicMsg = res.error;
+      } catch (e) { /* offline / cloud unreachable — the app still opens */ }
     }
+    initUpdates();
     // An invite link opens the guest page directly — no PIN, no shelf, no setup.
     const invite = Send.inviteFromHash();
     if (invite) {
@@ -222,7 +224,9 @@
       render();
       return;
     }
-    checkSharedInbox().finally(render);
+    await checkSharedInbox();
+    render();
+    if (magicMsg) toast(magicMsg);
     // Devices already holding readings should be marked must-keep even if
     // they saved before persistence was requested (or the browser said no
     // once) — re-ask quietly whenever there is something worth keeping.
