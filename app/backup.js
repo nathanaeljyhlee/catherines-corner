@@ -195,7 +195,11 @@
   }
 
   // ---------- backup / restore ----------
-  async function exportAll() {
+  // The shared walk: enumerate the whole corner into a manifest + a list of
+  // {name, blob} files (audio + images), WITHOUT choosing a container. exportAll
+  // zips it; cloud.js (Stage 2) content-hashes each file and uploads by sha —
+  // both speak the same manifest, so the cloud is "a backup that syncs".
+  async function packAll() {
     const [corners, readers, books, readings, requests, activeCorner] = await Promise.all([
       DB.corners.all(), DB.readers.all(), DB.books.all(), DB.readings.all(), DB.requests.all(), DB.corners.active(),
     ]);
@@ -210,6 +214,11 @@
       cornerName: activeCorner ? activeCorner.name : null,   // kept for humans reading the manifest
       corners, readers, books: booksOut, readings: readingsOut, requests,
     };
+    return { manifest, files };
+  }
+
+  async function exportAll() {
+    const { manifest, files } = await packAll();
     files.unshift({ name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) });
     return await makeZip(files);
   }
@@ -450,5 +459,5 @@
     return counts;
   }
 
-  window.Backup = { exportAll, exportDelta, importFile, inspect, importBackup, exportParcel, importParcel, audioExt, normalizeAudioFile };
+  window.Backup = { packAll, exportAll, exportDelta, importFile, inspect, importBackup, exportParcel, importParcel, audioExt, normalizeAudioFile };
 })();
