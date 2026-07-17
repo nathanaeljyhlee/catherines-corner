@@ -38,6 +38,21 @@
     return api('/family/claim', { method: 'POST', body: JSON.stringify({ familyId }) });
   }
 
+  // Make this device speak for the SIGNED-IN ACCOUNT's family, not its own local
+  // Corner ID. If the account already has a family (backed up from another
+  // device), adopt it so this device shares that library; otherwise this is the
+  // first device, so claim its Corner ID as the family. Returns the family id.
+  async function ensureIdentity() {
+    const mine = await api('/family/mine', {});
+    const local = await g.DB.familyId();
+    if (mine && mine.familyId) {
+      if (mine.familyId !== local && g.DB.settings) await g.DB.settings.set('familyId', mine.familyId);
+      return mine.familyId;
+    }
+    await api('/family/claim', { method: 'POST', body: JSON.stringify({ familyId: local }) });
+    return local;
+  }
+
   // Enumerate the corner into { manifest (with _blobShas), blobs: Map<sha,{blob,mime}> }.
   // Reuses Backup.packAll's exact walk; content-hashes each file so uploads dedup.
   async function enumerate() {
@@ -57,8 +72,12 @@
   // Back the whole corner up to the cloud. Uploads only blobs the cloud lacks
   // (dedup), so a second backup with no new recordings uploads ~0 bytes.
   async function pushBackup(deviceLabel) {
-    await claim();
-    const familyId = await g.DB.familyId();
+    const familyId = await ensureIdentity();
+    // Reconcile first: fold in whatever the cloud already holds for this family
+    // — another device's readings, or this account's pre-cloud library arriving
+    // on a second device — so the manifest we write is the UNION and no
+    // recordings drop out of the cloud index. importBackup only ever merges.
+    try { await pullBackup(); } catch (e) { if (!/\b404\b|no backup/i.test(e.message)) throw e; }
     const { manifest, blobs } = await enumerate();
     const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
     const manSha = await sha256Hex(manifestBlob);
@@ -88,7 +107,7 @@
   // zip restore uses (Backup.importBackup): corners merge by name, ids collision-
   // safe. Safe to run on a fresh device.
   async function pullBackup() {
-    await claim();
+    await ensureIdentity();
     const latest = await api('/backup/latest', {});
     const manifest = await (await fetch(latest.url)).json();
     const map = new Map();

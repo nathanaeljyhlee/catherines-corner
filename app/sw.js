@@ -1,8 +1,9 @@
 /* Catherine's Corner service worker — offline app shell.
    Bump VERSION on every deploy so clients pick up new code. */
 
-const VERSION = 'cc-v1.12.2';
+const VERSION = 'cc-v1.13.0';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'db.js', 'telemetry.js', 'ui.js', 'send.js', 'backup.js', 'export.js',
+  'cloudauth.js', 'cloud.js',
   'screens-kid.js', 'screens-adult.js', 'screens-record.js', 'whatsnew.js', 'sync.js',
   'manifest.json', 'icon-180.png', 'icon-512.png', 'check.html'];
 

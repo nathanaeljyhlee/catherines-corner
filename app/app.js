@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.12.2';
+  const APP_VERSION = '1.13.0';
   const { el, esc, toast } = UI;
 
   // ---------- app state ----------
@@ -148,7 +148,7 @@
       '<p class="screen-sub" style="margin-bottom:14px">Catherine’s Corner is in <b>alpha</b> — you’re testing it early, and the honest state of things is:</p>' +
       '<div class="stack">' +
       '<div class="rowitem"><span style="font-size:19px">📍</span><div class="grow"><div class="t">Recordings live only on this device</div>' +
-      '<div class="d">In this browser, on this phone or tablet. Your recordings are never uploaded anywhere.</div></div></div>' +
+      '<div class="d">In this browser, on this phone or tablet. Your recordings aren’t uploaded anywhere unless you turn on cloud backup (under Keep it safe).</div></div></div>' +
       (window.Telemetry && Telemetry.configured()
         ? '<div class="rowitem"><span style="font-size:19px">📊</span><div class="grow"><div class="t">Anonymous usage counts help fix rough spots</div>' +
           '<div class="d">Simple counts of what gets used — never recordings, names, or titles — reach the maker. Turn it off any time: for grown-ups → What gets used.</div></div></div>'
@@ -205,6 +205,15 @@
   // ---------- boot ----------
   document.addEventListener('DOMContentLoaded', () => {
     initUpdates();
+    // A magic sign-in link (#magic=…) redeems on load; the session is stored and
+    // the token scrubbed from the URL. Land normally; the cloud card shows signed-in.
+    if (window.CloudAuth) {
+      CloudAuth.init().then(res => {
+        if (!res) return;
+        if (res.email) { toast('Signed in as ' + res.email + '. Cloud backup is under “for grown-ups → Keep it safe.”'); render(); }
+        else if (res.error) toast(res.error);
+      }).catch(() => {});
+    }
     // An invite link opens the guest page directly — no PIN, no shelf, no setup.
     const invite = Send.inviteFromHash();
     if (invite) {

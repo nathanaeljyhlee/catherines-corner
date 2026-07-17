@@ -311,7 +311,7 @@
     ]);
     root.appendChild(el(
       '<h1 class="screen-title">Keep it safe</h1>' +
-      '<p class="screen-sub">Everything lives on this device. A backup puts the whole corner — every child’s shelf, every voice, every page — into one plain zip file you can keep anywhere and open with anything, even without this app.</p>'));
+      '<p class="screen-sub">Everything lives on this device by default. A backup puts the whole corner — every child’s shelf, every voice, every page — into one plain zip file you can keep anywhere and open with anything, even without this app. You can also turn on cloud backup below, so a lost device never means losing the voices.</p>'));
 
     // Say honestly how this browser is treating the data.
     const gb = n => (n / 1073741824).toFixed(n >= 1073741824 ? 1 : 2);
@@ -353,6 +353,44 @@
         btn.disabled = false; btn.textContent = '⤓ Back up everything';
       }
     };
+
+    // ---- Cloud backup (Stage 2) ----
+    if (window.Cloud && window.CloudAuth) {
+      const cloudLast = await DB.settings.get('cloudLastBackup');
+      const ccard = el('<div class="card" style="margin-top:14px"><div class="kicker">cloud backup</div>' +
+        '<p class="hint" style="margin-top:8px">Keep a copy safely in the cloud, so a lost or broken device never means losing the voices. Your recordings stay private to your family and are reached only after you sign in.' +
+        (cloudLast ? ' · last cloud backup ' + new Date(cloudLast).toLocaleDateString() : '') + '</p><div id="cloudbody"></div></div>');
+      root.appendChild(ccard);
+      const body = ccard.querySelector('#cloudbody');
+      const signedIn = () => {
+        body.innerHTML = '<p class="hint" style="margin:2px 0 8px">Signed in as <b>' + esc(CloudAuth.email() || '') + '</b></p>' +
+          '<div class="btn-row"><button class="btn primary" id="cpush">☁️ Back up to the cloud</button>' +
+          '<button class="btn" id="cpull">⤓ Restore from the cloud</button></div>' +
+          '<p class="hint" style="margin-top:8px"><a href="#" id="cout">Sign out of cloud backup</a></p>';
+        body.querySelector('#cpush').onclick = async () => {
+          const b = body.querySelector('#cpush'); b.disabled = true; b.textContent = 'Backing up…';
+          try { const r = await Cloud.pushBackup('this device'); await DB.settings.set('cloudLastBackup', Date.now()); DB.metrics.bump('cloud.backup_done'); toast('Backed up to the cloud — ' + r.uploaded + ' new item' + (r.uploaded === 1 ? '' : 's') + ' uploaded.'); render(); }
+          catch (e) { toast('Cloud backup didn’t finish: ' + e.message); b.disabled = false; b.textContent = '☁️ Back up to the cloud'; }
+        };
+        body.querySelector('#cpull').onclick = async () => {
+          const b = body.querySelector('#cpull'); b.disabled = true; b.textContent = 'Restoring…';
+          try { const c = await Cloud.pullBackup(); clearURLCache(); DB.metrics.bump('cloud.restore_done'); toast('Restored from the cloud — ' + c.readings + ' reading' + (c.readings === 1 ? '' : 's') + '.'); render(); }
+          catch (e) { toast(/404|no backup/i.test(e.message) ? 'No cloud backup found for this account yet.' : 'Restore didn’t finish: ' + e.message); b.disabled = false; b.textContent = '⤓ Restore from the cloud'; }
+        };
+        body.querySelector('#cout').onclick = async (e) => { e.preventDefault(); await CloudAuth.signOut(); render(); };
+      };
+      const signedOut = () => {
+        body.innerHTML = '<div class="btn-row" style="gap:8px;flex-wrap:wrap"><input type="email" id="cemail" placeholder="your email" autocomplete="email" inputmode="email" style="flex:1;min-width:170px;padding:10px;border:1px solid #d8cdbb;border-radius:10px;font:inherit"><button class="btn primary" id="csend">✉️ Email me a sign-in link</button></div>';
+        body.querySelector('#csend').onclick = async () => {
+          const email = body.querySelector('#cemail').value.trim();
+          if (!email) return toast('Enter your email first.');
+          const b = body.querySelector('#csend'); b.disabled = true; b.textContent = 'Sending…';
+          try { await CloudAuth.signIn(email); body.innerHTML = '<p class="hint">📧 Check <b>' + esc(email) + '</b> for a sign-in link. It works once and expires in 15 minutes — open it on this device.</p>'; }
+          catch (e) { toast(e.message); b.disabled = false; b.textContent = '✉️ Email me a sign-in link'; }
+        };
+      };
+      (CloudAuth.isSignedIn() ? signedIn : signedOut)();
+    }
 
     const scard = el(
       '<div class="card" style="margin-top:14px"><div class="kicker">two devices?</div>' +
