@@ -12,5 +12,11 @@ compatibility_flags = ["nodejs_compat"]
 # Phase 0 presigns R2 via the S3 API (aws4fetch), so no R2 binding is needed
 # and local `wrangler dev` runs against live R2 + Neon with no Cloudflare login.
 
+[vars]
+# Neon Auth (Better Auth) JWKS — public URL, verifies production tokens.
+# TEST_MODE is deliberately NOT set here: the HS256 test-auth path is dev-only
+# (.dev.vars), so production accepts ONLY real Neon Auth JWTs.
+NEON_AUTH_JWKS_URL = "https://ep-rough-math-av76b0vf.neonauth.c-11.us-east-1.aws.neon.tech/neondb/auth/.well-known/jwks.json"
+
 [observability]
 enabled = true
