@@ -99,6 +99,16 @@
         wrap.querySelector('#err').textContent = 'That’s not it — try again.';
       }
     }
+
+    // Desktop: type digits / Backspace on the keyboard, not just tapping the pad.
+    // Self-cleans when the PIN screen is gone; ignores the "forgot code" sub-view.
+    const onKey = (e) => {
+      if (!document.body.contains(wrap)) { document.removeEventListener('keydown', onKey); return; }
+      if (!wrap.querySelector('#pad')) return;
+      if (/^[0-9]$/.test(e.key)) { e.preventDefault(); key(e.key); }
+      else if (e.key === 'Backspace') { e.preventDefault(); key('⌫'); }
+    };
+    document.addEventListener('keydown', onKey);
   });
 
   // =========================================================
@@ -403,7 +413,13 @@
           const code = body.querySelector('#ccode').value.trim();
           if (!code) return toast('Enter the code from your email.');
           const b = body.querySelector('#cverify'); b.disabled = true; b.textContent = 'Signing in…';
-          try { await CloudAuth.verifyCode(email, code); toast('Signed in — your recordings can now be backed up.'); render(); }
+          try {
+            await CloudAuth.verifyCode(email, code);
+            render();
+            toast('Signed in. Backing up your recordings to the cloud…');
+            const r = await Cloud.autoBackup('sign-in');   // fold the existing library up automatically
+            if (r) { DB.metrics.bump('cloud.backup_done'); toast('Your recordings are safe in the cloud.'); render(); }
+          }
           catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Sign in'; }
         };
         body.querySelector('#cresend').onclick = async (e) => { e.preventDefault(); try { await CloudAuth.signIn(email); toast('A new code is on its way.'); } catch (err) { toast(err.message); } };
